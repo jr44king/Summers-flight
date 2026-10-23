@@ -224,6 +224,62 @@ function shapeState(s) {
   };
 }
 
+// ---------- free ADS-B networks (readsb "v2" API format) ----------
+const ADSB_SOURCES = (process.env.ADSB_SOURCES || 'https://api.adsb.lol/v2,https://api.airplanes.live/v2,https://opendata.adsb.fi/api/v2').split(',').map((s) => s.trim()).filter(Boolean);
+
+function shapeAdsb(a, nowMs) {
+  const ground = a.alt_baro === 'ground';
+  const alt = ground ? 0 : (typeof a.alt_baro === 'number' ? a.alt_baro : typeof a.alt_geom === 'number' ? a.alt_geom : null);
+  const vs = typeof a.baro_rate === 'number' ? a.baro_rate : typeof a.geom_rate === 'number' ? a.geom_rate : 0;
+  return {
+    icao24: String(a.hex || '').replace(/^~/, ''),
+    callsign: String(a.flight || '').trim(),
+    country: a.r ? `Reg. ${a.r}` : '',
+    posTime: nowMs - (Number(a.seen_pos) || 0) * 1000,
+    lat: a.lat, lon: a.lon,
+    altFt: alt != null ? Math.round(alt) : null,
+    onGround: ground,
+    gsKt: typeof a.gs === 'number' ? Math.round(a.gs) : null,
+    track: typeof a.track === 'number' ? a.track : (typeof a.true_heading === 'number' ? a.true_heading : null),
+    vsFpm: Math.round(vs),
+    squawk: a.squawk || null,
+    type: a.t || '',
+  };
+}
+
+// Returns a shaped state, or null if the networks answered but can't see the flight.
+// Throws only if every source is unreachable.
+async function adsbLookup(q, knownHex) {
+  adsbLookup.lastAnswered = false;
+  const paths = [];
+  if (knownHex) paths.push(`/hex/${knownHex}`);
+  if (/^[0-9A-F]{6}$/.test(q)) paths.push(`/hex/${q.toLowerCase()}`);
+  for (const c of callsignCandidates(q)) paths.push(`/callsign/${c}`);
+  let lastErr = null;
+  for (const base of ADSB_SOURCES) {
+    let answered = false;
+    for (const p of paths) {
+      try {
+        const { data } = await fetchJSON(base + p, { timeout: 10000 });
+        answered = true;
+        const now = (data && data.now) || Date.now();
+        const hits = ((data && data.ac) || []).filter((a) => typeof a.lat === 'number' && typeof a.lon === 'number');
+        if (hits.length) {
+          hits.sort((a, b) => (a.seen_pos || 0) - (b.seen_pos || 0));
+          adsbLookup.lastAnswered = true;
+          return shapeAdsb(hits[0], now);
+        }
+      } catch (e) {
+        lastErr = e;
+        if (!answered) break; // this source is down or rate-limiting: try the next one
+      }
+    }
+    if (answered) adsbLookup.lastAnswered = true; // empty here; another network may still see it
+  }
+  if (adsbLookup.lastAnswered) return null;
+  throw lastErr || new Error('No live-flight source reachable');
+}
+
 const tracked = new Map(); // query → { icao24, state, at, pending }
 const trackPaths = new Map(); // icao24 → { path, at }
 
@@ -234,8 +290,24 @@ async function findFlight(q) {
   if (entry.pending) return entry.pending;
 
   entry.pending = (async () => {
+    // 1) Free community ADS-B networks (work from hosting services like Render).
     let state = null;
-    // Cheap lookup (1 credit): a small box around where the plane was last seen.
+    try {
+      state = await adsbLookup(q, entry.icao24);
+    } catch (e) {
+      state = null; // all ADS-B sources unreachable: fall through to OpenSky
+    }
+    if (state) {
+      entry.icao24 = state.icao24; entry.state = state; entry.at = Date.now();
+      return entry;
+    }
+    if (adsbLookup.lastAnswered) {
+      // ADS-B networks answered but don't see this flight right now.
+      const err = new Error(`No live aircraft found for “${q}”. Check the flight is in the air right now, and try the airline’s 3-letter code (e.g. UAL123 instead of UA123).`);
+      err.status = 404;
+      throw err;
+    }
+    // 2) OpenSky as a last resort. Cheap lookup (1 credit): a small box around where the plane was last seen.
     if (entry.state && entry.state.lat != null) {
       const { lat, lon } = entry.state;
       const d = 2.4; // 4.8° × 4.8° ≈ 23 sq° → the cheapest OpenSky price tier
