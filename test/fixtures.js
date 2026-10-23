@@ -57,8 +57,13 @@ function fakeGfs(sp) {
 }
 
 const openskyCalls = [];
+const faCalls = [];
+const adsbCalls = [];
+const adsb = { down: false };
+// adsb.lol-style answer: UAL123 over Colorado at 35,000 ft, 450 kt, level.
+const ADSB_UAL123 = { hex: 'a1b2c3', flight: 'UAL123  ', r: 'N12345', t: 'B738', lat: 40.0, lon: -104.0, alt_baro: 35000, alt_geom: 35400, gs: 450, track: 90, baro_rate: 0, seen_pos: 0.4, seen: 0.2 };
 function installMockFetch() {
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
   const json = (obj, headers = {}) => ({ ok: true, status: 200, headers: new Map(Object.entries(headers)), text: async () => JSON.stringify(obj) });
   if (u.includes('/pirep')) return json(PIREPS);
@@ -75,6 +80,36 @@ globalThis.fetch = async (url) => {
     return json({ timezone: lon < -100 ? 'America/Los_Angeles' : 'America/New_York', utc_offset_seconds: 0, hourly: { time: [] } });
   }
   if (u.includes('api.open-meteo.com/v1/gfs')) return json(fakeGfs(new URL(u).searchParams));
+  if (u.includes('aeroapi.flightaware.com')) {
+    faCalls.push(u);
+    if (!opts.headers || opts.headers['x-apikey'] !== 'test-key') return { ok: false, status: 401, headers: new Map(), text: async () => '{}' };
+    const iso = (ms) => new Date(ms).toISOString();
+    if (/\/flights\/UAL123\?/.test(u)) return json({ flights: [
+      { fa_flight_id: 'UAL123-old', ident_icao: 'UAL123', actual_off: iso(Date.now() - 30 * 3600e3), actual_on: iso(Date.now() - 25 * 3600e3), origin: { code_iata: 'JFK', code_icao: 'KJFK' }, destination: { code_iata: 'SFO', code_icao: 'KSFO' } },
+      { fa_flight_id: 'UAL123-now', ident_icao: 'UAL123', aircraft_type: 'B38M', actual_off: iso(Date.now() - 2 * 3600e3), actual_on: null, estimated_on: iso(Date.now() + 3 * 3600e3), progress_percent: 40, filed_altitude: 350,
+        origin: { code: 'KSFO', code_iata: 'SFO', code_icao: 'KSFO', city: 'San Francisco', name: 'San Francisco Intl', timezone: 'America/Los_Angeles' },
+        destination: { code: 'KJFK', code_iata: 'JFK', code_icao: 'KJFK', city: 'New York', name: 'John F Kennedy Intl', timezone: 'America/New_York' } }] });
+    if (u.endsWith('/flights/UAL123-now/route')) return json({ route_distance: '2600 mi', fixes: [
+      { name: 'KSFO', latitude: 37.619, longitude: -122.375 }, { name: 'WPT1', latitude: 39.5, longitude: -112 },
+      { name: 'NOLL', latitude: null, longitude: null }, { name: 'WPT2', latitude: 40.1, longitude: -104.5 },
+      { name: 'WPT3', latitude: 43.5, longitude: -92 }, { name: 'WPT4', latitude: 42, longitude: -80 }, { name: 'KJFK', latitude: 40.6399, longitude: -73.7787 }] });
+    if (u.endsWith('/flights/UAL123-now/track')) return json({ positions: [
+      { latitude: 37.7, longitude: -122.2, altitude: 20, timestamp: iso(Date.now() - 115 * 60000) },
+      { latitude: 39.4, longitude: -112.3, altitude: 350, timestamp: iso(Date.now() - 60 * 60000) },
+      { latitude: 39.9, longitude: -105.5, altitude: 350, timestamp: iso(Date.now() - 10 * 60000) }] });
+    return { ok: false, status: 404, headers: new Map(), text: async () => '{}' };
+  }
+  if (u.includes('/api/0/routeset')) {
+    return json([{ callsign: 'UAL123', plausible: true, _airport_codes_iata: 'SFO-JFK', _airports: [
+      { iata: 'SFO', icao: 'KSFO', location: 'San Francisco', lat: 37.619, lon: -122.375, alt_feet: 13 },
+      { iata: 'JFK', icao: 'KJFK', location: 'New York', lat: 40.6399, lon: -73.7787, alt_feet: 13 }] }]);
+  }
+  if (/api\.adsb\.lol|airplanes\.live|adsb\.fi/.test(u)) {
+    adsbCalls.push(u);
+    if (adsb.down) throw new TypeError('fetch failed');
+    const hit = /\/callsign\/UAL123$/.test(u) || /\/hex\/a1b2c3$/.test(u);
+    return json({ ac: hit ? [ADSB_UAL123] : [], msg: 'No error', now: Date.now(), total: hit ? 1 : 0 });
+  }
   if (u.includes('opensky-network.org/api/states/all')) { openskyCalls.push(u); return json({ time: 1, states: [OTHER, STATE] }, { 'x-rate-limit-remaining': '390' }); }
   if (u.includes('opensky-network.org/api/tracks/all')) return json({ icao24: 'a1b2c3', path: [[1, 39.8, -106, 9000, 90, false], [2, 40.0, -104.0, 10668, 90, false]] });
   return { ok: false, status: 404, headers: new Map(), text: async () => '' };
@@ -82,4 +117,4 @@ globalThis.fetch = async (url) => {
 }
 
 
-module.exports = { now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, STATE, openskyCalls, gfsCalls, installMockFetch };
+module.exports = { faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, STATE, openskyCalls, gfsCalls, installMockFetch };

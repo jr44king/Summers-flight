@@ -145,6 +145,7 @@ main {
 }
 .mapwrap.full { position: fixed; inset: 0; height: auto; z-index: 1000; }
 .mapwrap.full .mapbtn { top: calc(env(safe-area-inset-top) + 10px); right: 14px; }
+.pathnote { margin: 0; padding: 10px 16px; font-size: 13px; color: var(--muted); border-top: .5px solid var(--sep); }
 .switchrow { border-top: .5px solid var(--sep); font-size: 16px; }
 .switch { appearance: none; -webkit-appearance: none; width: 51px; height: 31px; border-radius: 16px; background: var(--fill); position: relative; transition: background .2s; flex: none; cursor: pointer; margin: 0; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,.2); transition: transform .2s; }
@@ -168,5 +169,11 @@ main {
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34c759; margin-right: 6px; vertical-align: 1px; animation: pulse 2s infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 .livebar p { margin: 6px 0 10px; font-size: 16px; }
+.livebar .lb-sub { margin: 2px 0 0; color: var(--muted); font-size: 15px; }
+.lb-route { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin: 12px 0 4px; padding: 12px 0; border-top: .5px solid var(--sep); border-bottom: .5px solid var(--sep); }
+.lb-route b { display: block; font: 700 28px/1.1 var(--round); letter-spacing: .5px; }
+.lb-route span { display: block; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-route .to { text-align: right; }
+.lb-route svg { color: var(--blue); }
 
 footer { color: var(--muted); font-size: 12px; line-height: 1.5; padding: 18px 16px 0; text-align: center; }

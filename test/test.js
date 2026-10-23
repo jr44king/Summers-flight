@@ -1,7 +1,8 @@
 // Offline tests: run with `node test/test.js`. Uses fake data shaped like the real feeds.
 'use strict';
 const assert = require('assert');
-const { now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, openskyCalls, gfsCalls, installMockFetch } = require('./fixtures');
+process.env.FLIGHTAWARE_API_KEY = 'test-key';
+const { faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, openskyCalls, gfsCalls, installMockFetch } = require('./fixtures');
 installMockFetch();
 
 const { normalizeTurbulence, parseIntensity } = require('../lib/normalize');
@@ -40,9 +41,12 @@ const { describePlace, aircraftName } = require('../lib/places');
 assert.strictEqual(describePlace(39.75, -104.99), 'Near Denver');
 assert.match(describePlace(40.3, -104.2), /^\d+ mi NE of Denver$/);
 assert.strictEqual(describePlace(35, -140), 'Over the Pacific');
-assert.strictEqual(aircraftName('B738'), 'Boeing 737');
-assert.strictEqual(aircraftName('A21N'), 'Airbus A320 family');
-assert.strictEqual(aircraftName('CRJ9'), 'CRJ regional jet');
+assert.strictEqual(aircraftName('B738'), 'Boeing 737-800');
+assert.strictEqual(aircraftName('B38M'), 'Boeing 737 MAX 8');
+assert.strictEqual(aircraftName('B732'), 'Boeing 737', 'family fallback');
+assert.strictEqual(require('../lib/places').airlineName('DAL437'), 'Delta Air Lines');
+assert.strictEqual(aircraftName('A21N'), 'Airbus A321neo');
+assert.strictEqual(aircraftName('CRJ9'), 'Bombardier CRJ-900');
 assert.strictEqual(aircraftName('UAL747'), 'Flight UAL747');
 
 // ----- time zones (daylight saving handled) -----
@@ -93,16 +97,34 @@ server.listen(0, async () => {
     const t = JSON.parse((await get('/api/turbulence')).body);
     assert.strictEqual(t.pireps.length, 3); assert.strictEqual(t.areas.length, 4); assert.deepStrictEqual(t.warnings, []);
 
-    let r = await get('/api/flight?q=UA123&path=1');
+    // Live flight via the free ADS-B network (adsb.lol), UA123 → UAL123.
+    let r = await get('/api/flight?q=UA123');
     let f = JSON.parse(r.body);
     assert.strictEqual(r.status, 200, r.body);
     assert.strictEqual(f.flight.callsign, 'UAL123', 'IATA UA123 → ICAO UAL123');
-    assert.strictEqual(f.flight.altFt, 35000); assert.strictEqual(f.flight.gsKt, 450);
-    assert.strictEqual(f.path.length, 2); assert.strictEqual(f.creditsRemaining, 390);
-    assert.ok(!openskyCalls[0].includes('lamin'), 'first lookup is global');
-    // Second call inside the refresh window is served from cache: no new OpenSky call.
+    assert.strictEqual(f.flight.altFt, 35000); assert.strictEqual(f.flight.gsKt, 450); assert.strictEqual(f.flight.icao24, 'a1b2c3');
+    assert.ok(adsbCalls[0].startsWith('https://api.adsb.lol/v2/'), 'adsb.lol first');
+    assert.strictEqual(f.flight.aircraft, 'Boeing 737-800'); assert.strictEqual(f.flight.airline, 'United Airlines');
+    assert.strictEqual(f.route.origin.iata, 'SFO'); assert.strictEqual(f.route.dest.iata, 'JFK'); assert.ok(f.route.plausible);
+    assert.ok(f.trailIsComplete, 'real FlightAware track used');
+    assert.deepStrictEqual(f.trail[0], [37.7, -122.2]); assert.deepStrictEqual(f.trail.at(-1), [40, -104]);
+    assert.ok(f.plan && f.plan.length === 6, 'filed route, bad fix dropped'); assert.strictEqual(f.pathSource, 'flightaware');
+    assert.strictEqual(f.route.origin.iata, 'SFO'); assert.strictEqual(f.route.dest.name, 'New York');
+    const faAfterFirst = faCalls.length;
+    assert.strictEqual(faAfterFirst, 3, 'one flight + one route + one track lookup');
+    assert.strictEqual(openskyCalls.length, 0, 'OpenSky not needed');
+    const nAdsb = adsbCalls.length;
     await get('/api/flight?q=UA123');
-    assert.strictEqual(openskyCalls.length, 1, 'cached');
+    assert.strictEqual(adsbCalls.length, nAdsb, 'cached within refresh window');
+
+    // All ADS-B networks unreachable → falls back to OpenSky.
+    adsb.down = true;
+    r = await get('/api/flight?q=UAL123');
+    f = JSON.parse(r.body);
+    assert.strictEqual(r.status, 200, r.body);
+    assert.strictEqual(f.flight.callsign, 'UAL123');
+    assert.strictEqual(openskyCalls.length, 1, 'OpenSky fallback used');
+    adsb.down = false;
 
     r = await get('/api/flight?q=ZZZ999');
     assert.strictEqual(r.status, 404);
@@ -146,6 +168,15 @@ server.listen(0, async () => {
     assert.ok(fc.live && fc.dest.id === 'KJFK');
     assert.ok(fc.points[0].altFt === 35000 && fc.durationMin < 260);
     assert.ok(fc.points.some((p) => /pilot|Official/.test(p.why || '')), 'near-term reports used');
+    // With the flight's callsign, the forecast follows the filed route (bends north over the Great Lakes).
+    r = await get('/api/forecast?lat=40&lon=-104&alt=35000&gs=450&track=90&vs=0&to=JFK&q=UAL123');
+    fc = JSON.parse(r.body);
+    assert.strictEqual(r.status, 200, r.body);
+    assert.ok(fc.followsFiledRoute, 'uses filed route');
+    assert.ok(Math.max(...fc.line.map((p) => p[0])) > 43, 'line passes the northern waypoint');
+    assert.ok(faCalls.length === faAfterFirst, 'no extra paid lookups (cached)');
+    const { remainingPath } = require('../lib/flightaware');
+    assert.strictEqual(remainingPath([[0, 0], [0, 10]], [30, 5]), null, 'far off the filed route → fall back');
     r = JSON.parse((await get('/api/forecast?lat=40&lon=-104&alt=35000&gs=450&track=90')).body);
     assert.strictEqual(r.durationMin, 120);
     // ----- live pilot-report feed -----
@@ -153,7 +184,7 @@ server.listen(0, async () => {
     assert.strictEqual(fd.reports.length, 3);
     assert.ok(fd.reports[0].time >= fd.reports[1].time && fd.reports[1].time >= fd.reports[2].time, 'newest first');
     assert.ok(fd.reports.every((r) => r.place && r.id));
-    assert.strictEqual(fd.reports.find((r) => r.intensity === 2).aircraft, 'Boeing 737');
+    assert.strictEqual(fd.reports.find((r) => r.intensity === 2).aircraft, 'Boeing 737-800');
     assert.strictEqual(fd.refreshSec, 60);
     console.log('All tests passed ✔');
   } catch (e) {

@@ -101,6 +101,12 @@
   <section id="results" class="hidden" aria-live="polite">
     <div class="card livebar hidden" id="liveBar">
       <div class="lb-top"><b id="lbCall">—</b><span class="pill"><i class="dot"></i><span id="lbFresh">live</span></span></div>
+      <p class="lb-sub" id="lbPlane"></p>
+      <div class="lb-route hidden" id="lbRoute">
+        <div><b id="lbFrom">—</b><span id="lbFromName"></span></div>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2c.7 0 1.2.8 1.2 1.8v5.4l7.3 4.3v1.9l-7.3-2.2v4.6l2.2 1.6v1.6L12 20.1 8.6 21v-1.6l2.2-1.6v-4.6l-7.3 2.2v-1.9l7.3-4.3V3.8C10.8 2.8 11.3 2 12 2z" fill="currentColor" transform="rotate(90 12 12)"/></svg>
+        <div class="to"><b id="lbTo">—</b><span id="lbToName"></span></div>
+      </div>
       <p id="lbStatus">—</p>
       <button type="button" class="link" id="stopBtn">Stop tracking</button>
     </div>
@@ -131,6 +137,7 @@
         <div id="map"></div>
         <button type="button" class="mapbtn" id="mapBtn">Expand</button>
       </div>
+      <p class="pathnote" id="pathNote"></p>
       <label class="row switchrow">
         <span>Show pilot reports &amp; warnings</span>
         <input type="checkbox" class="switch" id="showReports">
@@ -145,7 +152,7 @@
 
   <footer>
     For curiosity and peace of mind, not for flight operations. Turbulence can happen without warning, so keep your seatbelt on when seated.
-    <br>Forecast: NOAA GFS via Open-Meteo · Pilot reports &amp; warnings: NOAA Aviation Weather Center · Live flights: OpenSky Network.
+    <br>Forecast: NOAA GFS via Open-Meteo · Pilot reports &amp; warnings: NOAA Aviation Weather Center · Live flights: adsb.lol, airplanes.live &amp; adsb.fi.
   </footer>
 </main>
 

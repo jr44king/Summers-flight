@@ -19,6 +19,7 @@
     return n || a.id;
   };
   const code = (a) => (a && (a.iata || a.id)) || '';
+  const cityName = (a) => (a && a.name && a.name.includes('/') ? niceName(a) : a && a.name ? a.name : '');
   const ago = (ms) => {
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
     if (s < 60) return s < 10 ? 'just now' : `${s}s ago`;
@@ -210,7 +211,7 @@
   });
 
   // ---------- results ----------
-  function render(o) {
+  function render(o, refit) {
     state.result = o;
     const r = o.rating;
     $('results').classList.remove('hidden');
@@ -257,7 +258,7 @@
 
     $('confLabel').textContent = o.confidence.label;
     $('confText').textContent = o.confidence.text + (o.warnings && o.warnings.length ? ' ' + o.warnings.join(' ') : '');
-    drawRoute();
+    drawRoute(refit !== false && (refit === undefined || refit));
   }
 
   function phaseTime(p, o) {
@@ -277,7 +278,7 @@
 
   // ---------- map ----------
   const dark = false; // the pink theme is always light
-  const map = L.map('map', { zoomControl: false, attributionControl: true, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, worldCopyJump: true }).setView([39, -97], 3);
+  const map = L.map('map', { zoomSnap: 0.25, zoomControl: false, attributionControl: true, dragging: false, touchZoom: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false, worldCopyJump: true }).setView([39, -97], 3);
   // Esri's clean grey basemaps: free to use with attribution, no key needed.
   L.tileLayer(`https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/${dark ? 'World_Dark_Gray_Base' : 'World_Light_Gray_Base'}/MapServer/tile/{z}/{y}/{x}`, {
     maxZoom: 12, attribution: 'Tiles © Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
@@ -286,24 +287,90 @@
   const planeLayer = L.layerGroup().addTo(map);
   const reportLayer = L.layerGroup();
 
-  function drawRoute() {
+  // Great-circle points between two [lat, lon] positions, so long lines curve like real flight paths.
+  function gcLine(a, b, n) {
+    const r = Math.PI / 180, out = [];
+    const [la1, lo1, la2, lo2] = [a[0] * r, a[1] * r, b[0] * r, b[1] * r];
+    const d = 2 * Math.asin(Math.sqrt(Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+    if (d < 1e-6) return [a, b];
+    n = n || Math.max(2, Math.ceil(d / r / 2));
+    let prevLon = null;
+    for (let i = 0; i <= n; i++) {
+      const f = i / n, A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+      const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+      const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+      const z = A * Math.sin(la1) + B * Math.sin(la2);
+      let lon = Math.atan2(y, x) / r;
+      if (prevLon != null) { while (lon - prevLon > 180) lon -= 360; while (lon - prevLon < -180) lon += 360; }
+      prevLon = lon;
+      out.push([Math.atan2(z, Math.sqrt(x * x + y * y)) / r, lon]);
+    }
+    return out;
+  }
+
+  function drawRoute(refit) {
     routeLayer.clearLayers();
     const o = state.result;
     if (!o) return;
-    const pts = o.points;
-    // Halo underneath so the colours read on any map.
-    L.polyline(pts.map((p) => [p.lat, p.lon]), { color: dark ? '#000' : '#fff', weight: 9, opacity: 0.8 }).addTo(routeLayer);
-    for (let i = 1; i < pts.length; i++) {
-      L.polyline([[pts[i - 1].lat, pts[i - 1].lon], [pts[i].lat, pts[i].lon]], { color: pts[i].color, weight: 5, lineCap: 'round' })
-        .bindPopup(`<b>${esc(pts[i].levelName)}</b><br>${esc(o.live ? 'In' : 'About')} ${esc(dur(pts[i].t))}${o.live ? '' : ' into the flight'} · ${esc(Math.round(pts[i].altFt / 1000))},000 ft${pts[i].why ? '<br>' + esc(pts[i].why) : ''}`)
-        .addTo(routeLayer);
+    const pinIcon = () => L.divIcon({ className: '', html: '<div class="ap-pin"></div>', iconSize: [14, 14], iconAnchor: [7, 7] });
+    const live = o.live && state.plane;
+    const elapsed = live ? (Date.now() - o.departUtc) / 60000 : 0;
+    const here = live ? planeNow() : null;
+
+    // Path ahead: [lat, lon, colour, minute] every 2 min along the exact route (filed plan when available).
+    let ahead = (o.line && o.line.length ? o.line : o.points.map((p) => [p.lat, p.lon, p.color, p.t]));
+    if (live) {
+      const rest = ahead.filter((p) => p[3] > elapsed);
+      ahead = [[here[0], here[1], (rest[0] || ahead[ahead.length - 1])[2], elapsed], ...rest];
     }
-    const pin = L.divIcon({ className: '', html: '<div class="ap-pin"></div>', iconSize: [14, 14], iconAnchor: [7, 7] });
-    if (!o.live && o.origin) L.marker([o.origin.lat, o.origin.lon], { icon: pin }).bindTooltip(code(o.origin), { permanent: true, direction: 'left', offset: [-8, 0] }).addTo(routeLayer);
-    if (o.dest) L.marker([o.dest.lat, o.dest.lon], { icon: pin }).bindTooltip(code(o.dest), { permanent: true, direction: 'right', offset: [8, 0] }).addTo(routeLayer);
-    const b = L.latLngBounds(pts.map((p) => [p.lat, p.lon]));
-    if (o.dest) b.extend([o.dest.lat, o.dest.lon]);
-    setTimeout(() => { map.invalidateSize(); map.fitBounds(b.pad(0.15), { maxZoom: 8 }); }, 50);
+
+    if (live) {
+      // Path behind: the real track when we have it, otherwise departure airport → what we've seen → now.
+      const trail = (state.trail || []).slice();
+      const rt = state.liveRoute;
+      const flown = [];
+      if (!state.trailIsComplete && rt && rt.origin) flown.push(...gcLine([rt.origin.lat, rt.origin.lon], trail[0] || here));
+      flown.push(...trail, here);
+      if (flown.length > 1) {
+        L.polyline(flown, state.trailIsComplete
+          ? { color: '#b0748d', weight: 3.5, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }
+          : { color: '#c98aa3', weight: 3, dashArray: '2 7', lineCap: 'round', opacity: 0.9 }).addTo(routeLayer);
+      }
+      if (rt && rt.origin) L.marker([rt.origin.lat, rt.origin.lon], { icon: pinIcon() }).bindTooltip(code(rt.origin), { permanent: true, direction: 'left', offset: [-8, 0] }).addTo(routeLayer);
+    }
+
+    // White halo, then the forecast colours on top (one polyline per run of the same colour).
+    L.polyline(ahead.map((p) => [p[0], p[1]]), { color: '#fff', weight: 9, opacity: 0.85, lineJoin: 'round' }).addTo(routeLayer);
+    let run = [ahead[0]];
+    const flush = () => {
+      if (run.length < 2) return;
+      const mid = run[Math.floor(run.length / 2)];
+      const sp = o.points.reduce((a, b) => (Math.abs(b.t - mid[3]) < Math.abs(a.t - mid[3]) ? b : a));
+      L.polyline(run.map((p) => [p[0], p[1]]), { color: run[1][2], weight: 5, lineCap: 'round', lineJoin: 'round' })
+        .bindPopup(`<b>${esc(sp.levelName)}</b><br>${esc(o.live ? 'In' : 'About')} ${esc(dur(Math.max(0, mid[3] - elapsed)))}${o.live ? '' : ' into the flight'} · ${esc(Math.round(sp.altFt / 1000))},000 ft${sp.why ? '<br>' + esc(sp.why) : ''}`)
+        .addTo(routeLayer);
+    };
+    for (let i = 1; i < ahead.length; i++) {
+      if (ahead[i][2] !== run[run.length - 1][2] && run.length > 1) { flush(); run = [run[run.length - 1]]; }
+      run.push(ahead[i]);
+    }
+    flush();
+
+    if (!o.live && o.origin) L.marker([o.origin.lat, o.origin.lon], { icon: pinIcon() }).bindTooltip(code(o.origin), { permanent: true, direction: 'left', offset: [-8, 0] }).addTo(routeLayer);
+    if (o.dest) L.marker([o.dest.lat, o.dest.lon], { icon: pinIcon() }).bindTooltip(code(o.dest), { permanent: true, direction: 'right', offset: [8, 0] }).addTo(routeLayer);
+
+    // Where the line comes from, in plain words.
+    $('pathNote').textContent = live
+      ? (o.followsFiledRoute ? 'Ahead: the airline’s filed flight plan. ' : 'Ahead: estimated (shortest path) — real routes can curve. ')
+        + (state.trailIsComplete ? 'Behind: the plane’s actual track.' : 'Behind: estimated, then actual since you started tracking.')
+      : 'Estimated route (shortest path). Real routes follow air-traffic lanes and can curve.';
+
+    if (refit !== false) {
+      const b = L.latLngBounds(ahead.map((p) => [p[0], p[1]]));
+      if (o.dest) b.extend([o.dest.lat, o.dest.lon]);
+      if (live) { (state.trail || []).forEach((p) => b.extend(p)); if (state.liveRoute && state.liveRoute.origin) b.extend([state.liveRoute.origin.lat, state.liveRoute.origin.lon]); }
+      setTimeout(() => { map.invalidateSize(); map.fitBounds(b, { maxZoom: 8, paddingTopLeft: [46, 30], paddingBottomRight: [46, 30] }); }, 50);
+    }
     if ($('showReports').checked) drawReports();
   }
 
@@ -369,11 +436,40 @@
 
   function stopLive(silent) {
     clearTimeout(state.liveTimer);
-    state.live = null; state.fcAt = 0;
-    planeLayer.clearLayers();
-    $('liveBar').classList.add('hidden');
+    state.live = null; state.fcAt = 0; state.fcDest = null; state.plane = null; state.trail = []; state.liveRoute = null;
+    planeLayer.clearLayers(); planeMarker = null;
+    $('liveTo').placeholder = 'JFK (optional)';
+    $('liveBar').classList.add('hidden'); $('lbRoute').classList.add('hidden');
     if (!silent) { const u = new URL(location.href); u.search = ''; history.replaceState(null, '', u); }
   }
+
+  // Plane position right now: last report moved forward at its speed and heading (max 90 s).
+  function planeNow() {
+    const f = state.plane;
+    if (!f) return null;
+    const dt = Math.min(90, Math.max(0, (Date.now() - (f.posTime || state.planeAt)) / 1000));
+    if (!f.gsKt || f.onGround) return [f.lat, f.lon];
+    const distNm = (f.gsKt * dt) / 3600, r = Math.PI / 180, d = distNm / 3440.065, b = (f.track || 0) * r, la = f.lat * r, lo = f.lon * r;
+    const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+    const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+    return [la2 / r, lo2 / r];
+  }
+  let planeMarker = null;
+  function placePlane() {
+    const f = state.plane;
+    if (!f) return;
+    const pos = planeNow();
+    const html = `<svg class="plane-ico" width="30" height="30" viewBox="0 0 24 24" style="transform:rotate(${f.track || 0}deg)"><path fill="#d6336c" stroke="#fff" stroke-width="1.2" d="M12 2c.7 0 1.2.8 1.2 1.8v5.4l7.3 4.3v1.9l-7.3-2.2v4.6l2.2 1.6v1.6L12 20.1 8.6 21v-1.6l2.2-1.6v-4.6l-7.3 2.2v-1.9l7.3-4.3V3.8C10.8 2.8 11.3 2 12 2z"/></svg>`;
+    if (!planeMarker || !planeLayer.hasLayer(planeMarker)) {
+      planeLayer.clearLayers();
+      planeMarker = L.marker(pos, { zIndexOffset: 1000, icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15], html }) }).addTo(planeLayer);
+    } else {
+      planeMarker.setLatLng(pos);
+      planeMarker.setIcon(L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 15], html }));
+    }
+  }
+  // Glide the plane between position updates.
+  setInterval(() => { if (state.live && state.plane && !document.hidden) { const p = planeNow(); if (planeMarker) planeMarker.setLatLng(p); } }, 1000);
 
   async function pollFlight(first) {
     clearTimeout(state.liveTimer);
@@ -385,19 +481,37 @@
       if (state.live !== L0) return;
       const f = d.flight;
       state.refreshSec = d.refreshSec || 30; wait = state.refreshSec; state.fetchedAt = d.fetchedAt;
+      state.plane = f; state.planeAt = Date.now();
+      state.trail = d.trail || [];
+      state.trailIsComplete = Boolean(d.trailIsComplete);
+      if (d.route && d.route.plausible) state.liveRoute = d.route;
+      const dest = L0.to || (state.liveRoute && (state.liveRoute.dest.iata || state.liveRoute.dest.id)) || '';
+      if (!L0.to && dest && !$('liveTo').value) $('liveTo').placeholder = `${dest} (found automatically)`;
       $('liveBar').classList.remove('hidden');
+      const rt = state.liveRoute;
       $('lbCall').textContent = f.callsign || f.icao24.toUpperCase();
+      $('lbPlane').textContent = [f.airline, f.aircraft].filter(Boolean).join(' · ') || 'Aircraft type unknown';
+      const fromAp = rt && rt.origin, toAp = L0.to ? (state.result && state.result.dest) || { iata: L0.to } : rt && rt.dest;
+      if (fromAp || toAp) {
+        $('lbRoute').classList.remove('hidden');
+        $('lbFrom').textContent = fromAp ? code(fromAp) : '—';
+        $('lbFromName').textContent = fromAp ? cityName(fromAp) : 'Unknown';
+        $('lbTo').textContent = toAp ? code(toAp) : '—';
+        $('lbToName').textContent = toAp ? cityName(toAp) : '';
+      } else $('lbRoute').classList.add('hidden');
       const mph = f.gsKt != null ? Math.round(f.gsKt * 1.15078) : null;
       const doing = f.onGround ? 'On the ground' : f.vsFpm > 500 ? 'Climbing' : f.vsFpm < -500 ? 'Descending' : 'Cruising';
       $('lbStatus').textContent = f.onGround ? 'On the ground' : `${doing} at ${(Math.round(f.altFt / 100) * 100).toLocaleString()} ft${mph ? ` · ${mph} mph` : ''}`;
-      planeLayer.clearLayers();
-      L.marker([f.lat, f.lon], { zIndexOffset: 1000, icon: L.divIcon({ className: '', iconSize: [28, 28], iconAnchor: [14, 14], html: `<svg class="plane-ico" width="28" height="28" viewBox="0 0 24 24" style="transform:rotate(${f.track || 0}deg)"><path fill="${dark ? '#fff' : '#111'}" d="M12 2c.7 0 1.2.8 1.2 1.8v5.4l7.3 4.3v1.9l-7.3-2.2v4.6l2.2 1.6v1.6L12 20.1 8.6 21v-1.6l2.2-1.6v-4.6l-7.3 2.2v-1.9l7.3-4.3V3.8C10.8 2.8 11.3 2 12 2z"/></svg>` }) }).addTo(planeLayer);
+      placePlane();
       // Refresh the ride forecast every 5 minutes (weather doesn't change faster than that).
-      if (first || Date.now() - state.fcAt > 5 * 60000) {
-        state.fcAt = Date.now();
-        const o = await getJSON(`/api/forecast?lat=${f.lat}&lon=${f.lon}&alt=${f.altFt || 0}&gs=${f.gsKt || 0}&track=${f.track || 0}&vs=${f.vsFpm || 0}${L0.to ? '&to=' + L0.to : ''}`);
+      if (first || Date.now() - state.fcAt > 5 * 60000 || dest !== state.fcDest) {
+        state.fcAt = Date.now(); state.fcDest = dest;
+        const o = await getJSON(`/api/forecast?lat=${f.lat}&lon=${f.lon}&alt=${f.altFt || 0}&gs=${f.gsKt || 0}&track=${f.track || 0}&vs=${f.vsFpm || 0}${dest ? '&to=' + dest : ''}&q=${encodeURIComponent(f.callsign || L0.q)}`);
         if (state.live !== L0) return;
-        render(o);
+        render(o, first);
+        if (L0.to && o.dest) { $('lbTo').textContent = code(o.dest); $('lbToName').textContent = cityName(o.dest); $('lbRoute').classList.remove('hidden'); }
+      } else {
+        drawRoute(false); // keep the line attached to the moving plane
       }
       hideError();
     } catch (err) {

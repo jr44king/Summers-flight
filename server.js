@@ -20,7 +20,8 @@ const { normalizeTurbulence } = require('./lib/normalize');
 const { forecastTrip } = require('./lib/plan');
 const { routeWeather, timeZoneFor } = require('./lib/weather');
 const { localToUtc, validZone } = require('./lib/time');
-const { describePlace, aircraftName } = require('./lib/places');
+const { describePlace, aircraftName, airlineName } = require('./lib/places');
+const { createFlightAware, remainingPath } = require('./lib/flightaware');
 
 const PORT = Number(process.env.PORT) || 3000;
 const OS_ID = process.env.OPENSKY_CLIENT_ID || '';
@@ -62,6 +63,27 @@ function send(res, status, body, extraHeaders = {}) {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...extraHeaders });
   res.end(json);
+}
+
+// ---------- FlightAware (optional, paid): real filed route + real flown track ----------
+const fa = createFlightAware({ apiKey: process.env.FLIGHTAWARE_API_KEY || '', fetchJSON: (...a) => fetchJSON(...a) });
+
+// Everything we know about a live flight's route: airports (with coordinates), real track, filed plan.
+async function liveRouteInfo(st) {
+  const out = { route: null, track: null, plan: null, source: 'estimate' };
+  const info = fa.enabled ? await fa.currentFlight(st.callsign).catch(() => null) : null;
+  if (info && info.origin && info.dest) {
+    const withCoords = async (a) => {
+      try { const g = await getAirport(a.iata || a.id); return { ...g, iata: a.iata || g.iata, name: a.name || g.name, tz: a.tz || g.tz }; } catch { return null; }
+    };
+    const [o, d] = await Promise.all([withCoords(info.origin), withCoords(info.dest)]);
+    if (o && d) out.route = { origin: o, dest: d, plausible: true, source: 'flightaware' };
+    const [track, plan] = await Promise.all([fa.flownTrack(info.faId).catch(() => null), fa.filedRoute(info.faId).catch(() => null)]);
+    out.track = track; out.plan = plan; out.info = info;
+    if (plan) out.source = 'flightaware';
+  }
+  if (!out.route) out.route = await flightRoute(st.callsign, st.lat, st.lon);
+  return out;
 }
 
 // ---------- turbulence data (refreshed every 5 minutes) ----------
@@ -297,10 +319,7 @@ async function findFlight(q) {
     } catch (e) {
       state = null; // all ADS-B sources unreachable: fall through to OpenSky
     }
-    if (state) {
-      entry.icao24 = state.icao24; entry.state = state; entry.at = Date.now();
-      return entry;
-    }
+    if (state) return remember(entry, state);
     if (adsbLookup.lastAnswered) {
       // ADS-B networks answered but don't see this flight right now.
       const err = new Error(`No live aircraft found for “${q}”. Check the flight is in the air right now, and try the airline’s 3-letter code (e.g. UAL123 instead of UA123).`);
@@ -329,12 +348,48 @@ async function findFlight(q) {
       err.status = 404;
       throw err;
     }
-    entry.icao24 = state.icao24;
-    entry.state = state;
-    entry.at = Date.now();
-    return entry;
+    return remember(entry, state);
   })().finally(() => { entry.pending = null; });
   return entry.pending;
+}
+
+// Where the plane has been since we started watching it (server-wide, per aircraft).
+const trails = new Map(); // icao24 → [[lat, lon, altFt, ms], ...]
+function remember(entry, state) {
+  entry.icao24 = state.icao24;
+  entry.state = state;
+  entry.at = Date.now();
+  const tr = trails.get(state.icao24) || [];
+  const last = tr[tr.length - 1];
+  if (!last || last[0] !== state.lat || last[1] !== state.lon) tr.push([state.lat, state.lon, state.altFt, state.posTime || Date.now()]);
+  if (tr.length > 720) tr.splice(0, tr.length - 720);
+  trails.set(state.icao24, tr);
+  if (trails.size > 500) trails.delete(trails.keys().next().value);
+  return entry;
+}
+
+// Departure and arrival airports for an airline flight (adsb.lol route database).
+const routes = new Map(); // callsign → { at, route }
+async function flightRoute(callsign, lat, lon) {
+  if (!/^[A-Z]{3}\d{1,4}[A-Z]?$/.test(callsign || '')) return null;
+  const c = routes.get(callsign);
+  if (c && Date.now() - c.at < 30 * 60000) return c.route;
+  let route = null;
+  try {
+    const { data } = await fetchJSON('https://api.adsb.lol/api/0/routeset', {
+      method: 'POST', timeout: 10000,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planes: [{ callsign, lat, lng: lon }] }),
+    });
+    const r = Array.isArray(data) ? data[0] : null;
+    const ap = (r && r._airports) || [];
+    if (ap.length >= 2) {
+      const shape = (a) => ({ id: a.icao, iata: a.iata, name: a.location || a.name, lat: Number(a.lat), lon: Number(a.lon), elevFt: Number(a.alt_feet) || 0 });
+      route = { origin: shape(ap[0]), dest: shape(ap[ap.length - 1]), plausible: r.plausible !== false };
+    }
+  } catch { route = null; }
+  routes.set(callsign, { at: Date.now(), route });
+  return route;
 }
 
 async function getTrackPath(icao24) {
@@ -412,7 +467,15 @@ async function tripForecast(params) {
     const live = { altFt: n('alt'), gsKt: n('gs'), track: n('track'), vsFpm: n('vs') || 0 };
     const lat = n('lat'), lon = n('lon');
     if (!isFinite(lat) || !isFinite(lon)) { const e = new Error('Missing position'); e.status = 400; throw e; }
-    const out = await forecastTrip({ origin: { lat, lon, elevFt: 0, code: 'current position' }, dest, departUtc: now, live, turb: turbData, getWeather: cachedWeather, now });
+    let path = null;
+    const q = (params.get('q') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (fa.enabled && q && dest) {
+      const info = await fa.currentFlight(q).catch(() => null);
+      const sameDest = info && info.dest && (info.dest.iata === dest.iata || info.dest.id === dest.id);
+      const plan = sameDest ? await fa.filedRoute(info.faId).catch(() => null) : null;
+      path = plan ? remainingPath(plan, [lat, lon]) : null;
+    }
+    const out = await forecastTrip({ origin: { lat, lon, elevFt: 0, code: 'current position' }, dest: dest ? { ...dest, code: dest.iata || dest.id } : null, departUtc: now, live, path, turb: turbData, getWeather: cachedWeather, now });
     return { ...out, live: true, dest };
   }
 
@@ -460,8 +523,20 @@ const server = http.createServer(async (req, res) => {
       if (!q || q.length > 8) return send(res, 400, { error: 'Enter a flight callsign like UAL123 or a 6-character transponder code.' });
       const entry = await findFlight(q);
       const withPath = url.searchParams.get('path') === '1';
+      const st = entry.state;
+      const ri = await liveRouteInfo(st);
+      const seen = trails.get(entry.icao24) || [];
+      // Real flown path: FlightAware's track up to when it was fetched, then our own live positions.
+      const lastFa = ri.track && ri.track.length ? ri.track[ri.track.length - 1][3] : 0;
+      const trail = [...(ri.track || []), ...seen.filter((p) => !lastFa || p[3] > lastFa)].map((p) => [+p[0].toFixed(4), +p[1].toFixed(4)]);
+      const type = st.type || (ri.info && ri.info.aircraftType) || '';
       return send(res, 200, {
-        flight: entry.state,
+        flight: { ...st, aircraft: aircraftName(type), airline: airlineName(st.callsign) },
+        route: ri.route,
+        trail,
+        trailIsComplete: Boolean(ri.track && ri.track.length),
+        plan: ri.plan,
+        pathSource: ri.source,
         path: withPath ? await getTrackPath(entry.icao24) : undefined,
         fetchedAt: entry.at,
         refreshSec: FLIGHT_REFRESH / 1000,
@@ -481,7 +556,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, await tripForecast(url.searchParams));
     }
     if (p === '/api/status') {
-      return send(res, 200, { flightRefreshSec: FLIGHT_REFRESH / 1000, turbRefreshSec: TURB_REFRESH / 1000, authenticated: HAS_OS_AUTH, creditsRemaining: osCredits.remaining, turbulenceUpdated: turb.at || null, turbulenceError: turb.error });
+      return send(res, 200, { flightaware: { enabled: fa.enabled, lastError: fa.status.lastError, calls: fa.status.calls }, flightRefreshSec: FLIGHT_REFRESH / 1000, turbRefreshSec: TURB_REFRESH / 1000, authenticated: HAS_OS_AUTH, creditsRemaining: osCredits.remaining, turbulenceUpdated: turb.at || null, turbulenceError: turb.error });
     }
     if (p.startsWith('/api/')) return send(res, 404, { error: 'Unknown endpoint' });
     return serveStatic(req, res, p);
@@ -501,6 +576,7 @@ if (require.main === module) {
       for (const ip of lan) console.log(`     http://${ip}:${PORT}`);
       console.log('');
     }
+    console.log(`FlightAware real flight paths: ${fa.enabled ? 'ON' : 'off (set FLIGHTAWARE_API_KEY to turn on)'}`);
     console.log(`Plane refresh every ${FLIGHT_REFRESH / 1000}s, turbulence every ${TURB_REFRESH / 60000} min. OpenSky account: ${HAS_OS_AUTH ? 'yes' : 'no (400 lookups/day)'}`);
   });
 }

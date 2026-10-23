@@ -10,7 +10,7 @@ An iPhone web app that answers "How bumpy will my flight be?"
 
 - **Weather forecast** (NOAA GFS model via Open-Meteo, free): winds at every altitude along your route at the time you'll be there. Sharp changes in wind with height near the jet stream are the main cause of clear-air turbulence. The forecast also checks for thunderstorms, unstable air, and gusty winds at both airports.
 - **Live reports** (NOAA Aviation Weather Center): pilot reports from the last 3 hours and official turbulence and thunderstorm warnings. These are used for flights leaving within the next few hours. They refresh every 5 minutes.
-- **Live positions** (OpenSky Network).
+- **Live positions and routes** (adsb.lol, with airplanes.live and adsb.fi as backups; OpenSky as a last resort). Free, no key needed, and they work from hosting services like Render.
 
 Confidence is highest on the day of travel and drops for trips more than 2–4 days out. Turbulence can't be predicted perfectly, so this is for peace of mind, not flight operations.
 
@@ -32,6 +32,16 @@ Leave Terminal open. It prints an address like `http://192.168.1.23:3000`.
 3. Optional: tap Share → **Add to Home Screen**. It then opens like an app.
 
 It only works while your Mac is on, awake, and running `node server.js`, and while your iPhone is on the same Wi‑Fi. To use it anywhere, it needs hosting online.
+
+## Optional: real flight paths (FlightAware, paid)
+
+With a FlightAware AeroAPI key, Live flight shows the plane's **actual track** since takeoff and the airline's **filed flight plan** ahead, and the turbulence forecast follows that real route. The Personal plan has no monthly fee and includes $5 of free usage a month. This app uses about 3 lookups per tracked flight (cached).
+
+1. Sign up at flightaware.com/aeroapi (Personal tier) and create an API key.
+2. On Render: your service → **Environment** → **Add Environment Variable**: `FLIGHTAWARE_API_KEY` = your key → **Save**.
+   On your Mac instead: `FLIGHTAWARE_API_KEY=your-key node server.js`
+
+Without a key, everything still works and the paths are estimated.
 
 ## Optional: more live-flight lookups
 
