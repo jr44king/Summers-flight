@@ -10,6 +10,7 @@ An iPhone web app that answers "How bumpy will my flight be?"
 
 - **Weather forecast** (NOAA GFS model via Open-Meteo, free): winds at every altitude along your route at the time you'll be there. Sharp changes in wind with height near the jet stream are the main cause of clear-air turbulence. The forecast also checks for thunderstorms, unstable air, and gusty winds at both airports.
 - **Live reports** (NOAA Aviation Weather Center): pilot reports from the last 3 hours and official turbulence and thunderstorm warnings. These are used for flights leaving within the next few hours. They refresh every 5 minutes.
+- **Weather radar** (RainViewer, free for personal use): rain and storms from the last few minutes, as an optional map layer.
 - **Live positions and routes** (adsb.lol, with airplanes.live and adsb.fi as backups; OpenSky as a last resort). Free, no key needed, and they work from hosting services like Render.
 
 Confidence is highest on the day of travel and drops for trips more than 2–4 days out. Turbulence can't be predicted perfectly, so this is for peace of mind, not flight operations.

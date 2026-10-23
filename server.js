@@ -74,15 +74,22 @@ async function liveRouteInfo(st) {
   const info = fa.enabled ? await fa.currentFlight(st.callsign).catch(() => null) : null;
   if (info && info.origin && info.dest) {
     const withCoords = async (a) => {
-      try { const g = await getAirport(a.iata || a.id); return { ...g, iata: a.iata || g.iata, name: a.name || g.name, tz: a.tz || g.tz }; } catch { return null; }
+      for (const code of [a.id, a.iata].filter(Boolean)) {
+        try { const g = await getAirport(code); return { ...g, iata: a.iata || g.iata, name: a.name || g.name, tz: a.tz || g.tz }; } catch { /* try the next code */ }
+      }
+      return { id: a.id, iata: a.iata, name: a.name, lat: null, lon: null, noCoords: true };
     };
-    const [o, d] = await Promise.all([withCoords(info.origin), withCoords(info.dest)]);
-    if (o && d) out.route = { origin: o, dest: d, plausible: true, source: 'flightaware' };
     const [track, plan] = await Promise.all([fa.flownTrack(info.faId).catch(() => null), fa.filedRoute(info.faId).catch(() => null)]);
+    const [o, d] = await Promise.all([withCoords(info.origin), withCoords(info.dest)]);
+    // Fill missing airport coordinates from the real track (first point ≈ departure).
+    if (o.noCoords && track && track.length) { o.lat = track[0][0]; o.lon = track[0][1]; }
+    if (o.lat != null && d.lat != null) out.route = { origin: o, dest: d, plausible: true, source: 'flightaware' };
+    else out.routeNames = { origin: o, dest: d };
     out.track = track; out.plan = plan; out.info = info;
     if (plan) out.source = 'flightaware';
   }
   if (!out.route) out.route = await flightRoute(st.callsign, st.lat, st.lon);
+  if (!out.route && out.routeNames) out.route = { ...out.routeNames, plausible: false, namesOnly: true };
   return out;
 }
 
@@ -413,7 +420,8 @@ async function getAirport(id) {
   const tries = [id];
   if (id.length === 3) tries.push('K' + id, 'C' + id, 'P' + id);
   for (const t of tries) {
-    const { data } = await fetchJSON(`${AWC}/airport?ids=${encodeURIComponent(t)}&format=json`);
+    let data = null;
+    try { ({ data } = await fetchJSON(`${AWC}/airport?ids=${encodeURIComponent(t)}&format=json`)); } catch { continue; }
     const a = Array.isArray(data) && data[0];
     if (a && a.lat != null) {
       const out = { id: a.icaoId || t, iata: a.iataId, name: (a.name || '').trim(), lat: Number(a.lat), lon: Number(a.lon), elevFt: Number(a.elev) * 3.28084 || 0 };
@@ -531,7 +539,7 @@ const server = http.createServer(async (req, res) => {
       const trail = [...(ri.track || []), ...seen.filter((p) => !lastFa || p[3] > lastFa)].map((p) => [+p[0].toFixed(4), +p[1].toFixed(4)]);
       const type = st.type || (ri.info && ri.info.aircraftType) || '';
       return send(res, 200, {
-        flight: { ...st, aircraft: aircraftName(type), airline: airlineName(st.callsign) },
+        flight: { ...st, aircraft: aircraftName(type), airline: airlineName(st.callsign), faStatus: ri.info ? ri.info.status : null, landed: Boolean(st.onGround && ri.info && ri.info.departed) },
         route: ri.route,
         trail,
         trailIsComplete: Boolean(ri.track && ri.track.length),
@@ -554,6 +562,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/forecast') {
       return send(res, 200, await tripForecast(url.searchParams));
+    }
+    if (p === '/api/diagnostics') {
+      // No secrets here: shows whether FlightAware is on, recent call results, and the shape of its answers.
+      return send(res, 200, { flightaware: { enabled: fa.enabled, calls: fa.status.calls, lastError: fa.status.lastError, recent: fa.status.log, answerShapes: fa.status.samples } });
     }
     if (p === '/api/status') {
       return send(res, 200, { flightaware: { enabled: fa.enabled, lastError: fa.status.lastError, calls: fa.status.calls }, flightRefreshSec: FLIGHT_REFRESH / 1000, turbRefreshSec: TURB_REFRESH / 1000, authenticated: HAS_OS_AUTH, creditsRemaining: osCredits.remaining, turbulenceUpdated: turb.at || null, turbulenceError: turb.error });

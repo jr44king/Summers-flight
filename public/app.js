@@ -213,6 +213,7 @@
   // ---------- results ----------
   function render(o, refit) {
     state.result = o;
+    document.querySelectorAll('#results > .hidden:not(#liveBar)').forEach((el) => el.classList.remove('hidden'));
     const r = o.rating;
     $('results').classList.remove('hidden');
     [...$('meter').children].forEach((el, i) => { el.style.background = i < r.score ? r.color : ''; });
@@ -406,6 +407,39 @@
         .addTo(reportLayer);
     }
   }
+  // Weather radar (RainViewer, free for personal use): latest frame, under the route, refreshed every 10 min.
+  let radarLayer = null, radarTimer = null;
+  async function showRadar() {
+    clearTimeout(radarTimer);
+    try {
+      const d = await fetch('https://api.rainviewer.com/public/weather-maps.json').then((r) => r.json());
+      const frames = (d.radar && d.radar.past) || [];
+      const last = frames[frames.length - 1];
+      if (!last || !$('showRadar').checked) return;
+      const layer = L.tileLayer(`${d.host}${last.path}/256/{z}/{x}/{y}/2/1_0.png`, {
+        opacity: 0.6, maxNativeZoom: 7, maxZoom: 12, zIndex: 300, attribution: 'Radar © <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>',
+      });
+      layer.addTo(map);
+      if (radarLayer) setTimeout(((old) => () => map.removeLayer(old))(radarLayer), 1500); // swap without a flash
+      radarLayer = layer;
+      $('radarNote').textContent = `Rain & storms · ${ago(last.time * 1000)}`;
+    } catch {
+      $('radarNote').textContent = 'Radar unavailable right now';
+    }
+    radarTimer = setTimeout(showRadar, 10 * 60000);
+  }
+  function hideRadar() {
+    clearTimeout(radarTimer);
+    if (radarLayer) { map.removeLayer(radarLayer); radarLayer = null; }
+    $('radarNote').textContent = 'Rain & storms, last 2 hours';
+  }
+  $('showRadar').checked = store.get('radar') === true;
+  if ($('showRadar').checked) showRadar();
+  $('showRadar').addEventListener('change', (e) => {
+    store.set('radar', e.target.checked);
+    if (e.target.checked) showRadar(); else hideRadar();
+  });
+
   $('showReports').addEventListener('change', (e) => {
     if (e.target.checked) { reportLayer.addTo(map); drawReports(); } else reportLayer.remove();
   });
@@ -436,7 +470,7 @@
 
   function stopLive(silent) {
     clearTimeout(state.liveTimer);
-    state.live = null; state.fcAt = 0; state.fcDest = null; state.plane = null; state.trail = []; state.liveRoute = null;
+    state.live = null; state.fcAt = 0; state.fcDest = null; state.plane = null; state.trail = []; state.liveRoute = null; state.routeNames = null;
     planeLayer.clearLayers(); planeMarker = null;
     $('liveTo').placeholder = 'JFK (optional)';
     $('liveBar').classList.add('hidden'); $('lbRoute').classList.add('hidden');
@@ -485,10 +519,11 @@
       state.trail = d.trail || [];
       state.trailIsComplete = Boolean(d.trailIsComplete);
       if (d.route && d.route.plausible) state.liveRoute = d.route;
+      else if (d.route && d.route.namesOnly) state.routeNames = d.route;
       const dest = L0.to || (state.liveRoute && (state.liveRoute.dest.iata || state.liveRoute.dest.id)) || '';
       if (!L0.to && dest && !$('liveTo').value) $('liveTo').placeholder = `${dest} (found automatically)`;
       $('liveBar').classList.remove('hidden');
-      const rt = state.liveRoute;
+      const rt = state.liveRoute || state.routeNames;
       $('lbCall').textContent = f.callsign || f.icao24.toUpperCase();
       $('lbPlane').textContent = [f.airline, f.aircraft].filter(Boolean).join(' · ') || 'Aircraft type unknown';
       const fromAp = rt && rt.origin, toAp = L0.to ? (state.result && state.result.dest) || { iata: L0.to } : rt && rt.dest;
@@ -501,8 +536,17 @@
       } else $('lbRoute').classList.add('hidden');
       const mph = f.gsKt != null ? Math.round(f.gsKt * 1.15078) : null;
       const doing = f.onGround ? 'On the ground' : f.vsFpm > 500 ? 'Climbing' : f.vsFpm < -500 ? 'Descending' : 'Cruising';
-      $('lbStatus').textContent = f.onGround ? 'On the ground' : `${doing} at ${(Math.round(f.altFt / 100) * 100).toLocaleString()} ft${mph ? ` · ${mph} mph` : ''}`;
+      $('lbStatus').textContent = f.onGround ? (f.landed ? `Landed${rt && rt.dest ? ' at ' + code(rt.dest) : ''}` : 'On the ground') : `${doing} at ${(Math.round(f.altFt / 100) * 100).toLocaleString()} ft${mph ? ` · ${mph} mph` : ''}`;
       placePlane();
+      if (f.onGround) {
+        // Nothing left to forecast while the plane is on the ground.
+        $('results').classList.remove('hidden');
+        document.querySelectorAll('#results > :not(#liveBar)').forEach((el) => el.classList.add('hidden'));
+        showError(f.landed ? 'This flight has landed, so there’s no ride left to forecast. To check an upcoming flight, use “Plan a trip”.' : 'This plane is on the ground right now. Once it takes off, the ride forecast will appear here automatically.');
+        state.liveTimer = setTimeout(() => pollFlight(false), Math.max(wait, 60) * 1000);
+        return;
+      }
+      document.querySelectorAll('#results > .hidden:not(#liveBar)').forEach((el) => el.classList.remove('hidden'));
       // Refresh the ride forecast every 5 minutes (weather doesn't change faster than that).
       if (first || Date.now() - state.fcAt > 5 * 60000 || dest !== state.fcDest) {
         state.fcAt = Date.now(); state.fcDest = dest;
