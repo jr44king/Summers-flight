@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Summer’s Flight</title>
+<meta name="description" content="How bumpy will my flight be? A turbulence forecast for your trip.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Summer’s Flight">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#fdeef3">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <h1>Summer’s Flight <svg class="plane-title" viewBox="0 0 40 32" aria-label="airplane" role="img">
+      <g class="trail" stroke="#f4a3c0" stroke-width="2.2" stroke-linecap="round" fill="none">
+        <path d="M15.2 18.6L1.5 26.5"/><path d="M13.8 15.4L4.5 20.8" opacity=".7"/><path d="M17 21.8L9 26.4" opacity=".7"/>
+      </g>
+      <g transform="translate(26 12.5) rotate(60) scale(1.32) translate(-12 -12)">
+        <path fill="currentColor" d="M12 2c.7 0 1.2.8 1.2 1.8v5.4l7.3 4.3v1.9l-7.3-2.2v4.6l2.2 1.6v1.6L12 20.1 8.6 21v-1.6l2.2-1.6v-4.6l-7.3 2.2v-1.9l7.3-4.3V3.8C10.8 2.8 11.3 2 12 2z"/>
+      </g>
+    </svg></h1>
+    <p>How bumpy will your flight be?</p>
+  </header>
+
+  <div class="segmented" role="tablist">
+    <button role="tab" id="tabPlan" aria-selected="true">Plan a trip</button>
+    <button role="tab" id="tabLive" aria-selected="false">Live flight</button>
+    <button role="tab" id="tabFeed" aria-selected="false">Pilot reports</button>
+  </div>
+
+  <!-- ===== Live pilot-report feed ===== -->
+  <section id="feed" class="hidden">
+    <div class="feedhead">
+      <div>
+        <h2>Live pilot reports</h2>
+        <p id="feedFresh">Loading…</p>
+      </div>
+      <span class="newcount hidden" id="newCount"></span>
+    </div>
+    <div class="segmented small" id="feedFilter" role="tablist">
+      <button role="tab" data-f="all" aria-selected="false">All</button>
+      <button role="tab" data-f="bumpy" aria-selected="true">Bumpy only</button>
+      <button role="tab" data-f="trip" aria-selected="false">Near my trip</button>
+    </div>
+    <ul class="card list feedlist" id="feedList"></ul>
+    <p class="hint feedhint">What pilots in the air are feeling right now, from the last 3 hours. Tap a report to see the pilot’s exact message. Updates every minute.</p>
+  </section>
+
+  <!-- ===== Plan a trip ===== -->
+  <form id="planForm" class="card form" autocomplete="off" novalidate>
+    <div class="route">
+      <label class="ap">
+        <span class="cap">From</span>
+        <input id="from" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="4" placeholder="SFO">
+        <span class="apname" id="fromName"></span>
+      </label>
+      <button type="button" class="swap" id="swapBtn" aria-label="Swap airports">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M7 7h11l-3-3M17 17H6l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <label class="ap right">
+        <span class="cap">To</span>
+        <input id="to" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="4" placeholder="JFK">
+        <span class="apname" id="toName"></span>
+      </label>
+    </div>
+    <div class="row when">
+      <span class="cap">Departs</span>
+      <div class="pickers">
+        <input type="date" id="date" aria-label="Departure date">
+        <input type="time" id="time" aria-label="Departure time">
+      </div>
+    </div>
+    <p class="hint">Local time at the departure airport, as on your ticket.</p>
+    <button class="primary" id="planBtn" type="submit">Check my flight</button>
+  </form>
+
+  <!-- ===== Live flight ===== -->
+  <form id="liveForm" class="card form hidden" autocomplete="off" novalidate>
+    <label class="row field">
+      <span class="cap">Flight</span>
+      <input id="flight" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="8" placeholder="UAL123">
+    </label>
+    <label class="row field">
+      <span class="cap">Landing at</span>
+      <input id="liveTo" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="4" placeholder="JFK (optional)">
+    </label>
+    <p class="hint">For a flight that’s in the air right now. Use the airline code on flight trackers, like UAL123 or DAL45.</p>
+    <button class="primary" id="liveBtn" type="submit">Track flight</button>
+  </form>
+
+  <div id="error" class="error hidden" role="alert"></div>
+
+  <!-- ===== Results ===== -->
+  <section id="results" class="hidden" aria-live="polite">
+    <div class="card livebar hidden" id="liveBar">
+      <div class="lb-top"><b id="lbCall">—</b><span class="pill"><i class="dot"></i><span id="lbFresh">live</span></span></div>
+      <p id="lbStatus">—</p>
+      <button type="button" class="link" id="stopBtn">Stop tracking</button>
+    </div>
+
+    <div class="card rating">
+      <div class="meter" id="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <h2 id="rLabel">—</h2>
+      <p class="headline" id="rHeadline"></p>
+      <p class="advice" id="rAdvice"></p>
+      <p class="meta" id="rMeta"></p>
+    </div>
+
+    <h3 class="sect">Your flight, start to finish</h3>
+    <div class="card strip-card">
+      <div class="strip" id="strip"></div>
+      <div class="strip-labels" id="stripLabels"></div>
+      <ul class="list" id="phases"></ul>
+    </div>
+
+    <div id="bumpsWrap">
+      <h3 class="sect">When to expect bumps</h3>
+      <ul class="card list" id="bumps"></ul>
+    </div>
+
+    <h3 class="sect">Route</h3>
+    <div class="card mapcard">
+      <div id="mapWrap" class="mapwrap">
+        <div id="map"></div>
+        <button type="button" class="mapbtn" id="mapBtn">Expand</button>
+      </div>
+      <label class="row switchrow">
+        <span>Show pilot reports &amp; warnings</span>
+        <input type="checkbox" class="switch" id="showReports">
+      </label>
+    </div>
+
+    <div class="card conf">
+      <div class="row"><span>Forecast confidence</span><b id="confLabel">—</b></div>
+      <p id="confText"></p>
+    </div>
+  </section>
+
+  <footer>
+    For curiosity and peace of mind, not for flight operations. Turbulence can happen without warning, so keep your seatbelt on when seated.
+    <br>Forecast: NOAA GFS via Open-Meteo · Pilot reports &amp; warnings: NOAA Aviation Weather Center · Live flights: OpenSky Network.
+  </footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

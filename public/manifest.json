@@ -1,0 +1,9 @@
+{
+  "name": "Summer’s Flight",
+  "short_name": "Summer’s Flight",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fdeef3",
+  "theme_color": "#fdeef3",
+  "icons": [{ "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }]
+}
