@@ -166,7 +166,7 @@ server.listen(0, async () => {
     assert.ok(fc.segments.some((s) => s.reasons.some((x) => /jet-stream/i.test(x))), 'jet reason');
     assert.ok(fc.segments.some((s) => s.reasons.some((x) => /Gusty winds at JFK/.test(x))), 'landing gusts');
     assert.deepStrictEqual(fc.phases.map((p) => p.key), ['climb', 'cruise', 'descent']);
-    assert.strictEqual(fc.confidence.label, 'Good');
+    { const h = (fc.departUtc - Date.now()) / 3600000; assert.strictEqual(fc.confidence.label, h <= 3 ? 'Very high' : h <= 12 ? 'High' : h <= 36 ? 'Good' : 'Fair', 'accuracy matches hours ahead'); }
     const gfsBefore = gfsCalls.length;
     await get(`/api/forecast?from=SFO&to=JFK&depart=${day}T08:30`);
     assert.strictEqual(gfsCalls.length, gfsBefore, 'weather cached');
