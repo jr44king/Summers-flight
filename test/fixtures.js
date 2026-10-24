@@ -40,7 +40,7 @@ function fakeGfs(sp) {
     const lon = lons[i];
     const jet = lon > -105 && lon < -95;
     const nyc = lon > -75;
-    const lv = { 850: [20, 1500], 700: [30, 3000], 500: [50, 5600], 400: [60, 7200], 300: [jet ? 85 : 60, 9200], 250: [jet ? 110 : 65, 10400], 200: [jet ? 95 : 60, 11800] };
+    const lv = { 850: [20, 1500], 700: [30, 3000], 500: [50, 5600], 400: [60, 7200], 300: [jet ? 80 : 60, 9200], 250: [jet ? 115 : 65, 10400], 200: [jet ? 95 : 60, 11800] };
     const hourly = { time: times };
     for (const [p, [spd, z]] of Object.entries(lv)) {
       hourly[`wind_speed_${p}hPa`] = times.map(() => spd);

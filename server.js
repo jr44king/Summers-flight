@@ -94,13 +94,24 @@ async function liveRouteInfo(st) {
   return out;
 }
 
+// Combine report lists without duplicates.
+function mergeReports(...lists) {
+  const seen = new Set(), out = [];
+  for (const l of lists) for (const p of Array.isArray(l) ? l : []) {
+    const k = `${p.obsTime}|${p.lat}|${p.lon}|${p.fltLvl}`;
+    if (!seen.has(k)) { seen.add(k); out.push(p); }
+  }
+  return out;
+}
+
 // ---------- turbulence data (refreshed every 5 minutes) ----------
 const turb = { data: null, at: 0, pending: null, error: null };
 
 async function loadTurbulence() {
   // Each source is fetched separately so one outage doesn't blank the map.
   const sources = {
-    pireps: `${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3`,
+    pireps: `${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3&inten=lgt`,
+    pirepsRecent: `${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3&level=340`,
     airsigmet: `${AWC}/airsigmet?format=json`,
     isigmet: `${AWC}/isigmet?format=geojson`,
     gairmetHi: `${AWC}/gairmet?format=json&hazard=turb-hi`,
@@ -120,7 +131,7 @@ async function loadTurbulence() {
   const failed = Object.entries(raw).filter(([, v]) => !v.ok).map(([k, v]) => `${k}: ${v.error}`);
   if (failed.length === entries.length) throw new Error('All turbulence sources failed — ' + failed.join('; '));
   const out = normalizeTurbulence({
-    pireps: raw.pireps.ok ? raw.pireps.data : [],
+    pireps: mergeReports(raw.pireps.ok ? raw.pireps.data : [], raw.pirepsRecent.ok ? raw.pirepsRecent.data : []),
     airsigmet: raw.airsigmet.ok ? raw.airsigmet.data : [],
     isigmet: raw.isigmet.ok ? raw.isigmet.data : null,
     gairmet: [].concat(raw.gairmetHi.ok ? raw.gairmetHi.data || [] : [], raw.gairmetLo.ok ? raw.gairmetLo.data || [] : []),
@@ -150,7 +161,13 @@ async function getPirepFeed() {
   if (feed.data && Date.now() - feed.at < FEED_REFRESH) return feed.data;
   if (!feed.pending) {
     feed.pending = (async () => {
-      const { data } = await fetchJSON(`${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3`);
+      // Every report with turbulence from the last 3 hours, plus smooth-ride reports at cruising height.
+      const [bumpy, cruise] = await Promise.all([
+        fetchJSON(`${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3&inten=lgt`).then((r) => r.data).catch(() => null),
+        fetchJSON(`${AWC}/pirep?format=json&bbox=-90,-180,90,180&age=3&level=340`).then((r) => r.data).catch(() => null),
+      ]);
+      if (!bumpy && !cruise) throw new Error('Pilot reports unavailable');
+      const data = mergeReports(bumpy || [], cruise || []);
       const { pireps } = normalizeTurbulence({ pireps: data || [] });
       const reports = pireps
         .filter((p) => p.time != null)
@@ -416,10 +433,25 @@ async function getTrackPath(icao24) {
 
 // ---------- airports (for the destination) ----------
 const airports = new Map();
+// Built-in worldwide list (OurAirports, public domain): [iata, icao, city, name, lat, lon, elevFt]
+const AIRPORT_DB = (() => {
+  const byCode = new Map();
+  try {
+    for (const [iata, icao, city, name, lat, lon, elev] of require('./lib/airports.json')) {
+      const cleanCity = (city || name).split(/[(,]/)[0].trim();
+      const a = { id: icao || iata, iata, name: cleanCity, fullName: name, lat, lon, elevFt: elev || 0 };
+      byCode.set(iata, a);
+      if (icao && !byCode.has(icao)) byCode.set(icao, a);
+    }
+  } catch { /* list missing: fall back to NOAA lookups only */ }
+  return byCode;
+})();
+
 async function getAirport(id) {
   if (airports.has(id)) return airports.get(id);
+  if (AIRPORT_DB.has(id)) { const a = { ...AIRPORT_DB.get(id) }; airports.set(id, a); return a; }
   const tries = [id];
-  if (id.length === 3) tries.push('K' + id, 'C' + id, 'P' + id);
+  if (id.length === 3) tries.push('K' + id); // small US airports not in the list
   for (const t of tries) {
     let data = null;
     try { ({ data } = await fetchJSON(`${AWC}/airport?ids=${encodeURIComponent(t)}&format=json`)); } catch { continue; }

@@ -250,6 +250,7 @@
           <span class="d" style="background:${s.level.color}"></span>
           <span class="t">${esc(s.level.name)}</span>
           <span class="r">${s.startT < 3 ? (o.live ? 'Now' : 'At takeoff') : `${o.live ? 'In ' : ''}${esc(dur(Math.round(s.startT / 5) * 5 || s.startT))}${o.live ? '' : ' in'}`}</span>
+          ${FEEL[s.level.key] ? `<span class="feel">${esc(FEEL[s.level.key])}</span>` : ''}
           <span class="lvl">Lasting about ${esc(dur(Math.max(5, Math.round(s.minutes / 5) * 5)))}</span>
           ${s.reasons.length ? `<span class="s">${esc(s.reasons.join(' · '))}</span>` : ''}
         </li>`).join('');
@@ -279,6 +280,14 @@
     if (refit !== false) $('radarTime').value = '0';
     if ($('showRadar').checked) showRadar(); else hideRadar();
   }
+
+  // What each level feels like, in a few words.
+  const FEEL = {
+    light: 'A gentle rocking, like a car on a gravel road. Totally normal.',
+    moderate: 'Firmer bumps for a while. The seatbelt sign comes on as a routine precaution.',
+    strong: 'A bumpier stretch. The crew takes a seat until it smooths out, and it always does.',
+    severe: 'Rare and brief. Pilots plan around it, and your seatbelt keeps you safe.',
+  };
 
   function phaseTime(p, o) {
     if (o.live) return '';
@@ -472,7 +481,11 @@
       $('radarNote').textContent = 'Simulated radar forecast for your flight time';
     } else {
       clearHrrr();
-      $('radarNote').textContent = usRoute ? 'Rough forecast — detailed radar forecast appears about 15 hours before takeoff' : 'Rough forecast of rain & storms during your flight';
+      const lastHrrr = hrrr.run ? hrrr.initMs + 1080 * 60000 : 0;
+      const tzh = o.origin && o.origin.tz;
+      $('radarNote').textContent = !usRoute ? 'Rough forecast of rain & storms during your flight'
+        : hrrr.run && when > lastHrrr && o.departUtc < lastHrrr ? `Rough forecast — the detailed radar forecast only reaches ${fmtTime(lastHrrr, tzh)} so far`
+        : 'Rough forecast — detailed radar forecast appears about 15 hours before takeoff';
     }
     let k = 0;
     for (let i = 1; i < rd.times.length; i++) if (Math.abs(rd.times[i] - when) < Math.abs(rd.times[k] - when)) k = i;
@@ -720,7 +733,8 @@
   setInterval(() => { if (state.upcoming) updateUpcomingStatus(); else if (state.live && state.fetchedAt) $('lbFresh').textContent = `updated ${ago(state.fetchedAt)}`; }, 1000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { clearTimeout(state.liveTimer); clearTimeout(feedState.timer); return; }
-    if (state.live) pollFlight(false);
+    if (state.live && state.upcoming) waitForTakeoff(state.live); // still waiting for takeoff
+    else if (state.live) pollFlight(false);
     if (state.mode === 'feed') loadFeed();
   });
 

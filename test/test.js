@@ -87,6 +87,16 @@ assert.ok(!desc.points.some((p, i) => i > 0 && p.altFt > desc.points[i - 1].altF
   assert.ok(/7,000 ft|8,000 ft/.test(mw.details.find((d) => /Mountain/.test(d.title)).detail), 'detail mentions the terrain height');
   const jetSeg = (await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 2 * 86400000, getWeather: fake(40), now })).segments[0];
   assert.ok(/jet stream/.test(jetSeg.details[0].detail) && /mph/.test(jetSeg.details[0].detail), 'jet detail has real numbers');
+  // Calibration: typical quiet air (~4 kt/1,000 ft) is smooth; ~8 is moderate.
+  const cal = (shear) => forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: fake(shear * 3.937) });
+  assert.strictEqual((await cal(4.2)).rating.score, 1, 'quiet air → smooth');
+  assert.ok((await cal(8.2)).rating.score >= 3, 'strong shear → bumps');
+  // A single spiky forecast point gets trimmed; two in a row are kept.
+  const spiky = (n) => async (pts) => pts.map((p, i) => () => ({
+    levels: [[700, 30, 3000], [500, 50, 5600], [300, 60, 9200], [250, (i >= 15 && i < 15 + n) ? 100 : 62, 10400], [200, 60, 11800]].map(([pp, spd, z]) => ({ p: pp, spd, dir: 270, zFt: z * 3.28084 })),
+    cape: 0, li: 3, code: 1, gustKt: 5 }));
+  assert.strictEqual((await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: spiky(1) })).segments.length, 0, 'lone spike ignored');
+  assert.strictEqual((await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: spiky(3) })).segments.length, 1, 'real patch kept');
   await assert.rejects(forecastTrip({ origin: SFO, dest: JFK, departUtc: now, getWeather: async () => { throw new Error('down'); }, now }), /weather forecast/);
 })().catch((e) => { console.error(e); process.exit(1); });
 
@@ -176,7 +186,7 @@ server.listen(0, async () => {
     assert.strictEqual(r.status, 200, r.body);
     assert.ok(fc.live && fc.dest.id === 'KJFK');
     assert.ok(fc.points[0].altFt === 35000 && fc.durationMin < 260);
-    assert.ok(fc.points.some((p) => /pilot|Official/i.test(p.why || '')), 'near-term reports used');
+    assert.ok(fc.segments.some((g) => g.reasons.some((x) => /pilot|Official/i.test(x))), 'near-term reports used');
     // With the flight's callsign, the forecast follows the filed route (bends north over the Great Lakes).
     r = await get('/api/forecast?lat=40&lon=-104&alt=35000&gs=450&track=90&vs=0&to=JFK&q=UAL123');
     fc = JSON.parse(r.body);
@@ -195,6 +205,14 @@ server.listen(0, async () => {
     assert.ok(fd.reports.every((r) => r.place && r.id));
     assert.strictEqual(fd.reports.find((r) => r.intensity === 2).aircraft, 'Boeing 737-800');
     assert.strictEqual(fd.refreshSec, 60);
+    // ----- worldwide airports (built-in list) -----
+    const lhr = JSON.parse((await get('/api/airport?id=LHR')).body);
+    assert.strictEqual(lhr.id, 'EGLL'); assert.strictEqual(lhr.name, 'London'); assert.ok(Math.abs(lhr.lat - 51.47) < 0.05);
+    assert.strictEqual(JSON.parse((await get('/api/airport?id=RJAA')).body).iata, 'NRT', 'ICAO codes work too');
+    r = await get(`/api/forecast?from=LHR&to=JFK&depart=${day}T11:00`);
+    assert.strictEqual(r.status, 200, r.body);
+    assert.ok(JSON.parse(r.body).distanceMi > 3400, 'London → New York');
+
     // ----- flight number before takeoff (FlightAware) -----
     r = await get('/api/upcoming?q=DL173');
     let up = JSON.parse(r.body);
