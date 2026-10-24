@@ -435,16 +435,48 @@
   const forecastMode = () => Boolean(state.result && !state.result.live && state.result.radar && state.result.radar.cells && state.result.radar.cells.length);
   const rainColor = (mm, storm) => (storm ? '#b44fd6' : mm >= 10 ? '#ef4444' : mm >= 5 ? '#f59e0b' : mm >= 2 ? '#eccc2a' : mm >= 0.5 ? '#4cc46a' : '#a7e3a1');
 
+  // NOAA HRRR simulated radar (via Iowa Environmental Mesonet): radar-quality detail, US only, ~18 h ahead.
+  const hrrr = { run: null, initMs: 0, at: 0, layer: null, url: '' };
+  async function loadHrrr() {
+    if (hrrr.run && Date.now() - hrrr.at < 15 * 60000) return hrrr;
+    try {
+      const j = await fetch('https://mesonet.agron.iastate.edu/data/gis/images/4326/hrrr/refd_1080.json').then((r) => r.json());
+      const d = new Date(j.model_init_utc);
+      const p2 = (n) => String(n).padStart(2, '0');
+      hrrr.run = `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}`;
+      hrrr.initMs = d.getTime(); hrrr.at = Date.now();
+    } catch { hrrr.run = null; hrrr.at = Date.now(); }
+    return hrrr;
+  }
+  const inUS = (lat, lon) => lat > 21 && lat < 53 && lon > -134 && lon < -60;
+  function clearHrrr() { if (hrrr.layer) { map.removeLayer(hrrr.layer); hrrr.layer = null; hrrr.url = ''; } }
+
   function drawForecastRain() {
     fcLayer.clearLayers(); ghostLayer.clearLayers();
     const o = state.result;
-    if (!forecastMode() || !$('showRadar').checked) return;
+    if (!forecastMode() || !$('showRadar').checked) { clearHrrr(); return; }
     const t = Number($('radarTime').value) || 0;
     const when = o.departUtc + t * 60000;
     const rd = o.radar;
+    const line0 = o.line || [];
+    const usRoute = line0.length && line0.every((q) => inUS(q[0], q[1]));
+    const offMin = hrrr.run ? Math.round((when - hrrr.initMs) / 900000) * 15 : -1;
+    if (usRoute && hrrr.run && offMin >= 0 && offMin <= 1080) {
+      // Detailed simulated radar for this exact time.
+      const url = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/hrrr::REFD-F${String(offMin).padStart(4, '0')}-${hrrr.run}/{z}/{x}/{y}.png`;
+      if (url !== hrrr.url) {
+        const layer = L.tileLayer(url, { opacity: 0.7, zIndex: 300, maxZoom: 12, attribution: 'Radar forecast: NOAA HRRR via <a href="https://mesonet.agron.iastate.edu" target="_blank" rel="noopener">IEM</a>' }).addTo(map);
+        if (hrrr.layer) setTimeout(((old) => () => map.removeLayer(old))(hrrr.layer), 600);
+        hrrr.layer = layer; hrrr.url = url;
+      }
+      $('radarNote').textContent = 'Simulated radar forecast for your flight time';
+    } else {
+      clearHrrr();
+      $('radarNote').textContent = usRoute ? 'Rough forecast — detailed radar forecast appears about 15 hours before takeoff' : 'Rough forecast of rain & storms during your flight';
+    }
     let k = 0;
     for (let i = 1; i < rd.times.length; i++) if (Math.abs(rd.times[i] - when) < Math.abs(rd.times[k] - when)) k = i;
-    rd.cells.forEach((c, i) => {
+    if (!hrrr.layer) rd.cells.forEach((c, i) => {
       const mm = (rd.rain[i] || [])[k] || 0, storm = (rd.storm[i] || [])[k];
       if (mm < 0.1 && !storm) return;
       L.circle(c, { pane: 'rainFc', radius: rd.radiusKm * 1000, stroke: false, fillColor: rainColor(mm, storm), fillOpacity: storm ? 0.42 : 0.32, interactive: false }).addTo(fcLayer);
@@ -471,11 +503,12 @@
       sl.max = String(o.durationMin); sl.step = '5';
       if (Number(sl.value) > o.durationMin) sl.value = '0';
       $('radarTimeRow').classList.remove('hidden');
-      $('radarNote').textContent = 'Forecast rain & storms during your flight';
+      await loadHrrr();
+      if (!forecastMode() || !$('showRadar').checked) return;
       drawForecastRain();
       return;
     }
-    $('radarTimeRow').classList.add('hidden'); fcLayer.clearLayers(); ghostLayer.clearLayers();
+    $('radarTimeRow').classList.add('hidden'); fcLayer.clearLayers(); ghostLayer.clearLayers(); clearHrrr();
     try {
       const d = await fetch('https://api.rainviewer.com/public/weather-maps.json').then((r) => r.json());
       const frames = (d.radar && d.radar.past) || [];
@@ -496,7 +529,7 @@
   function hideRadar() {
     clearTimeout(radarTimer);
     if (radarLayer) { map.removeLayer(radarLayer); radarLayer = null; }
-    fcLayer.clearLayers(); ghostLayer.clearLayers();
+    fcLayer.clearLayers(); ghostLayer.clearLayers(); clearHrrr();
     $('radarTimeRow').classList.add('hidden');
     $('radarNote').textContent = forecastMode() ? 'Forecast rain & storms during your flight' : 'Rain & storms, last 2 hours';
   }

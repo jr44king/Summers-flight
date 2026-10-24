@@ -5,7 +5,7 @@ An iPhone web app that answers "How bumpy will my flight be?"
 - **Plan a trip**: enter From, To and the departure time from your ticket, up to 15 days ahead. You get a 1–5 bumpiness rating, a one-line summary, a takeoff, cruise and landing breakdown, and when to expect bumps.
 - **Pilot reports**: a live feed of what pilots are reporting right now ("Moderate bumps · 35,000 ft · 60 mi NE of Denver · Boeing 737 · 4 min ago"). Newest first, updates every minute, and can be filtered to bumpy reports only or to reports near your trip.
 - **Live flight**: enter a flight number (e.g. `DL173`). If it's in the air, it's tracked live with the forecast for the rest of the trip. If it hasn't taken off yet (up to ~2 days ahead, needs the FlightAware key), you get the forecast for its scheduled takeoff, and the page switches to live tracking by itself once it's airborne.
-- **Future radar**: for planned and upcoming flights, the Weather radar switch shows forecast rain and storms along the route for the flight's own hours, with a slider that moves the plane through the trip.
+- **Future radar**: for planned and upcoming flights, the Weather radar switch shows forecast rain and storms for the flight's own hours, with a slider that moves the plane through the trip. US flights within ~15–18 h get NOAA's detailed HRRR simulated radar (via the Iowa Environmental Mesonet); otherwise a rougher GFS-based forecast is shown.
 
 ## Where the forecast comes from
 
