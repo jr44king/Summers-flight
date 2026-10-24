@@ -257,8 +257,24 @@
       $('bumps').innerHTML = '<li class="empty" style="display:block">None expected. Enjoy the ride.</li>';
     }
 
-    $('confLabel').textContent = o.confidence.label;
-    $('confText').textContent = o.confidence.text + (o.warnings && o.warnings.length ? ' ' + o.warnings.join(' ') : '');
+    const c = o.confidence;
+    $('accLabel').textContent = c.label;
+    [...$('accDots').children].forEach((d, i) => d.classList.toggle('on', i < (c.score || 3)));
+    $('accText').textContent = c.text + (o.warnings && o.warnings.length ? ' ' + o.warnings.join(' ') : '');
+    // For flights more than a few hours away: say plainly that this is an estimate and to check again.
+    const hoursAway = (o.departUtc - Date.now()) / 3600000;
+    if (!o.live && hoursAway > 6) {
+      const tz = o.origin && o.origin.tz;
+      const dayKey = (ms) => new Intl.DateTimeFormat('en-CA', { timeZone: tz || undefined }).format(ms);
+      const daysAway = Math.round((Date.parse(dayKey(o.departUtc)) - Date.parse(dayKey(Date.now()))) / 86400000);
+      const when = daysAway <= 0 ? 'later today' : daysAway === 1 ? 'tomorrow' : new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: tz || undefined }).format(o.departUtc);
+      const checkWhen = daysAway <= 0 ? 'a few hours before the flight' : daysAway === 1 ? 'tomorrow morning' : `the day before, and once more on ${when} morning`;
+      const far = hoursAway > 48;
+      $('estimateNote').innerHTML = `<b>This is an estimate.</b><span>The weather forecast for ${esc(when)} is updated every few hours, so the bumpy spots can shift, grow, or disappear${far ? ' — and forecasts this far ahead change more' : ''}. On the day of the flight, live reports from pilots already in the air are added too. Check again ${esc(checkWhen)} for the most accurate picture.</span>`;
+      $('estimateNote').classList.remove('hidden');
+    } else {
+      $('estimateNote').classList.add('hidden');
+    }
     drawRoute(refit !== false && (refit === undefined || refit));
     if (refit !== false) $('radarTime').value = '0';
     if ($('showRadar').checked) showRadar(); else hideRadar();

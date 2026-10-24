@@ -116,6 +116,18 @@ main {
 .advice { color: var(--muted); font-size: 15px; margin: 0; }
 .meta { color: var(--muted); font-size: 13px; margin: 14px 0 0; padding-top: 12px; border-top: .5px solid var(--sep); }
 
+/* Forecast accuracy rating (+ "this is an estimate" note for flights that aren't today) */
+.accuracy { padding: 13px 16px 14px; }
+.acc-top { display: flex; align-items: center; gap: 10px; font-size: 16px; }
+.acc-top span:first-child { flex: 1; }
+.dots { display: inline-flex; gap: 4px; }
+.dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--fill); }
+.dots i.on { background: #e8649a; }
+.accuracy p { margin: 6px 0 0; font-size: 14px; color: var(--muted); line-height: 1.45; }
+.accuracy .estimate { margin-top: 10px; padding-top: 10px; border-top: .5px solid var(--sep); color: var(--text); }
+.accuracy .estimate b { display: block; margin-bottom: 2px; }
+.accuracy .estimate span { color: var(--muted); }
+
 /* Flight strip */
 .strip-card { padding-top: 16px; }
 .strip { display: flex; height: 12px; margin: 0 16px; border-radius: 6px; overflow: hidden; background: var(--fill); }
@@ -162,9 +174,6 @@ main {
 .ap-pin { width: 14px; height: 14px; border-radius: 50%; background: var(--card); border: 3px solid var(--text); }
 .plane-ico { filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
 
-/* Confidence */
-.conf .row { font-size: 16px; }
-.conf p { margin: 0; padding: 0 16px 14px; color: var(--muted); font-size: 14px; }
 
 /* Live bar */
 .livebar { padding: 14px 16px; }

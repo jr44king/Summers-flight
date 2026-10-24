@@ -168,7 +168,7 @@ server.listen(0, async () => {
 
     // Leaving now: live pilot reports and the current G-AIRMET count too.
     fc = JSON.parse((await get('/api/forecast?from=SFO&to=JFK&depart=now')).body);
-    assert.strictEqual(fc.confidence.label, 'High');
+    assert.strictEqual(fc.confidence.label, 'Very high'); assert.strictEqual(fc.confidence.score, 5);
 
     // Live flight already in the air over Colorado.
     r = await get('/api/forecast?lat=40&lon=-104&alt=35000&gs=450&track=90&vs=0&to=JFK');
