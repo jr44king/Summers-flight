@@ -147,6 +147,10 @@ main {
 .mapwrap.full .mapbtn { top: calc(env(safe-area-inset-top) + 10px); right: 14px; }
 .pathnote { margin: 0; padding: 10px 16px; font-size: 13px; color: var(--muted); border-top: .5px solid var(--sep); }
 .switchrow { border-top: .5px solid var(--sep); font-size: 16px; }
+.leaflet-rainFc-pane { filter: blur(7px); opacity: .95; }
+.timerow { flex-direction: column; align-items: stretch; gap: 4px; border-top: .5px solid var(--sep); padding-top: 10px; padding-bottom: 12px; }
+.timerow input[type=range] { width: 100%; accent-color: #e8649a; }
+.timerow span { font-size: 13px; color: var(--muted); text-align: center; font-variant-numeric: tabular-nums; }
 .sw-label small { display: block; font-size: 12px; color: var(--muted); margin-top: 1px; }
 .switch { appearance: none; -webkit-appearance: none; width: 51px; height: 31px; border-radius: 16px; background: var(--fill); position: relative; transition: background .2s; flex: none; cursor: pointer; margin: 0; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,.2); transition: transform .2s; }
@@ -177,4 +181,5 @@ main {
 .lb-route .to { text-align: right; }
 .lb-route svg { color: var(--blue); }
 
+footer.signature { font-size: 14px; font-weight: 600; color: var(--blue); letter-spacing: .3px; padding-top: 22px; }
 footer { color: var(--muted); font-size: 12px; line-height: 1.5; padding: 18px 16px 0; text-align: center; }

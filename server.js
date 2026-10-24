@@ -22,6 +22,7 @@ const { routeWeather, timeZoneFor } = require('./lib/weather');
 const { localToUtc, validZone } = require('./lib/time');
 const { describePlace, aircraftName, airlineName } = require('./lib/places');
 const { createFlightAware, remainingPath } = require('./lib/flightaware');
+const { forecastRadar } = require('./lib/radar');
 
 const PORT = Number(process.env.PORT) || 3000;
 const OS_ID = process.env.OPENSKY_CLIENT_ID || '';
@@ -460,6 +461,22 @@ async function cachedWeather(points, fromMs, toMs) {
   return samplers;
 }
 
+const radarCache = new Map();
+async function withRadar(out) {
+  if (!out || !out.line || out.live) return out;
+  const key = `${out.line[0][0]},${out.line[0][1]}>${out.line[out.line.length - 1][0]},${out.line[out.line.length - 1][1]}@${Math.floor(out.departUtc / 3600000)}`;
+  const hit = radarCache.get(key);
+  if (hit && Date.now() - hit.at < 30 * 60000) return { ...out, radar: hit.radar };
+  try {
+    const radar = await forecastRadar(out.line, out.departUtc, out.arriveUtc, fetchJSON);
+    radarCache.set(key, { at: Date.now(), radar });
+    if (radarCache.size > 100) radarCache.delete(radarCache.keys().next().value);
+    return { ...out, radar };
+  } catch {
+    return out; // the map just falls back to live radar
+  }
+}
+
 const MAX_AHEAD_DAYS = 15;
 async function tripForecast(params) {
   const code = (v) => (v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -501,7 +518,46 @@ async function tripForecast(params) {
     origin: { ...origin, code: origin.iata || origin.id }, dest: { ...dest, code: dest.iata || dest.id },
     departUtc, turb: turbData, getWeather: cachedWeather, now,
   });
-  return { ...out, live: false, origin, dest };
+  return withRadar({ ...out, live: false, origin, dest });
+}
+
+// A flight number that hasn't taken off yet: forecast it at its scheduled takeoff time (needs FlightAware).
+async function upcomingForecast(q) {
+  if (!fa.enabled) { const e = new Error('Looking up a flight before takeoff needs the FlightAware key. Use “Plan a trip” with the airports and time instead.'); e.status = 400; throw e; }
+  const cands = [...callsignCandidates(q)].sort((a, b) => b.length - a.length);
+  let up = null, airborne = null;
+  for (const c of cands) {
+    up = await fa.upcomingFlight(c);
+    if (up) break;
+    const cur = await fa.currentFlight(c);
+    if (cur && cur.departed && !cur.arrivedAt) { airborne = cur; break; }
+  }
+  if (!up && airborne) return { airborne: true, ident: airborne.ident };
+  if (!up) { const e = new Error(`Couldn’t find an upcoming flight “${q}” in the next 2 days. Check the flight number, or use “Plan a trip”.`); e.status = 404; throw e; }
+  if (!up.origin || !up.dest) { const e = new Error('FlightAware doesn’t list the airports for this flight yet.'); e.status = 404; throw e; }
+  const place = async (a) => {
+    for (const c of [a.id, a.iata].filter(Boolean)) {
+      try { const g = await getAirportWithZone(c); return { ...g, iata: a.iata || g.iata, name: g.name, city: a.name, tz: a.tz || g.tz }; } catch { /* next */ }
+    }
+    const e = new Error(`Couldn’t find airport ${a.iata || a.id}.`); e.status = 404; throw e;
+  };
+  const [origin, dest] = await Promise.all([place(up.origin), place(up.dest)]);
+  const plan = await fa.filedRoute(up.faId).catch(() => null);
+  let turbData = null;
+  try { turbData = await getTurbulence(); } catch { /* optional */ }
+  const now = Date.now();
+  const departUtc = Math.max(up.takeoffMs || now, now);
+  const out = await forecastTrip({
+    origin: { ...origin, code: origin.iata || origin.id }, dest: { ...dest, code: dest.iata || dest.id },
+    departUtc, path: plan, cruiseFt: up.filedAltitudeFt, turb: turbData, getWeather: cachedWeather, now,
+  });
+  return withRadar({
+    ...out, live: false, origin, dest,
+    upcoming: {
+      ident: up.ident, identIata: up.identIata, airline: airlineName(up.ident), aircraft: aircraftName(up.aircraftType),
+      takeoffMs: up.takeoffMs, scheduledOut: up.scheduledOut, status: up.status, cancelled: up.cancelled, filedRoute: Boolean(plan),
+    },
+  });
 }
 
 // ---------- HTTP routes ----------
@@ -559,6 +615,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/pireps') {
       return send(res, 200, await getPirepFeed());
+    }
+    if (p === '/api/upcoming') {
+      const q = (url.searchParams.get('q') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!q) return send(res, 400, { error: 'Enter a flight number, like DL173.' });
+      return send(res, 200, await upcomingForecast(q));
     }
     if (p === '/api/forecast') {
       return send(res, 200, await tripForecast(url.searchParams));

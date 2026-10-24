@@ -77,7 +77,16 @@ assert.ok(!desc.points.some((p, i) => i > 0 && p.altFt > desc.points[i - 1].altF
   assert.strictEqual(calm.segments.length, 0);
   const rough = await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 2 * 86400000, getWeather: fake(40), now });
   assert.ok(rough.rating.score >= 4, 'strong shear everywhere → Bumpy: ' + rough.rating.score);
-  assert.ok(rough.phases.find((p) => p.key === 'cruise').why.includes('jet-stream'));
+  assert.ok(rough.phases.find((p) => p.key === 'cruise').why.toLowerCase().includes('jet-stream'));
+  // Mountain waves: strong mid-level wind over high ground.
+  const mtn = await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 2 * 86400000, now, getWeather: async (pts) => pts.map((p) => () => ({
+    levels: [[700, 70, 3000], [500, 75, 5600], [300, 60, 9200], [250, 62, 10400], [200, 60, 11800]].map(([pp, spd, z]) => ({ p: pp, spd, dir: 270, zFt: z * 3.28084 })),
+    cape: 0, li: 3, code: 1, gustKt: 5, groundFt: p.lon > -112 && p.lon < -104 ? 7500 : 300 })) });
+  const mw = mtn.segments.find((x) => x.reasons.some((r) => /Mountain waves/.test(r)));
+  assert.ok(mw, 'mountain waves detected');
+  assert.ok(/7,000 ft|8,000 ft/.test(mw.details.find((d) => /Mountain/.test(d.title)).detail), 'detail mentions the terrain height');
+  const jetSeg = (await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 2 * 86400000, getWeather: fake(40), now })).segments[0];
+  assert.ok(/jet stream/.test(jetSeg.details[0].detail) && /mph/.test(jetSeg.details[0].detail), 'jet detail has real numbers');
   await assert.rejects(forecastTrip({ origin: SFO, dest: JFK, departUtc: now, getWeather: async () => { throw new Error('down'); }, now }), /weather forecast/);
 })().catch((e) => { console.error(e); process.exit(1); });
 
@@ -144,7 +153,7 @@ server.listen(0, async () => {
     assert.strictEqual(fc.departUtc, localToUtc(`${day}T08:30`, 'America/Los_Angeles'));
     assert.ok(fc.points.length <= 45 && fc.points.length > 20);
     assert.ok(fc.rating.score >= 3, 'jet stream in the fake data makes it bumpy: ' + fc.rating.score);
-    assert.ok(fc.segments.some((s) => s.reasons.some((x) => /jet-stream/.test(x))), 'jet reason');
+    assert.ok(fc.segments.some((s) => s.reasons.some((x) => /jet-stream/i.test(x))), 'jet reason');
     assert.ok(fc.segments.some((s) => s.reasons.some((x) => /Gusty winds at JFK/.test(x))), 'landing gusts');
     assert.deepStrictEqual(fc.phases.map((p) => p.key), ['climb', 'cruise', 'descent']);
     assert.strictEqual(fc.confidence.label, 'Good');
@@ -167,7 +176,7 @@ server.listen(0, async () => {
     assert.strictEqual(r.status, 200, r.body);
     assert.ok(fc.live && fc.dest.id === 'KJFK');
     assert.ok(fc.points[0].altFt === 35000 && fc.durationMin < 260);
-    assert.ok(fc.points.some((p) => /pilot|Official/.test(p.why || '')), 'near-term reports used');
+    assert.ok(fc.points.some((p) => /pilot|Official/i.test(p.why || '')), 'near-term reports used');
     // With the flight's callsign, the forecast follows the filed route (bends north over the Great Lakes).
     r = await get('/api/forecast?lat=40&lon=-104&alt=35000&gs=450&track=90&vs=0&to=JFK&q=UAL123');
     fc = JSON.parse(r.body);
@@ -186,6 +195,21 @@ server.listen(0, async () => {
     assert.ok(fd.reports.every((r) => r.place && r.id));
     assert.strictEqual(fd.reports.find((r) => r.intensity === 2).aircraft, 'Boeing 737-800');
     assert.strictEqual(fd.refreshSec, 60);
+    // ----- flight number before takeoff (FlightAware) -----
+    r = await get('/api/upcoming?q=DL173');
+    let up = JSON.parse(r.body);
+    assert.strictEqual(r.status, 200, r.body);
+    assert.strictEqual(up.upcoming.ident, 'DAL173'); assert.strictEqual(up.upcoming.aircraft, 'Airbus A350-900'); assert.strictEqual(up.upcoming.airline, 'Delta Air Lines');
+    assert.ok(Math.abs(up.departUtc - (Date.now() + 50 * 60000)) < 120000, 'forecast starts at the scheduled takeoff');
+    assert.strictEqual(up.cruiseFt, 37000, 'filed cruise altitude used');
+    assert.strictEqual(up.upcoming.filedRoute, false); assert.strictEqual(up.origin.iata, 'SFO'); assert.strictEqual(up.dest.iata, 'JFK');
+    assert.ok(up.radar && up.radar.cells.length % 5 === 0 && up.radar.cells.length <= 150, 'future rain grid');
+    assert.ok(up.radar.times.length >= 6 && up.radar.rain.some((row) => row.some((v) => v > 0)), 'some forecast rain');
+    up = JSON.parse((await get('/api/upcoming?q=UA123')).body);
+    assert.ok(up.airborne, 'already flying → tell the page to track it live');
+    assert.strictEqual((await get('/api/upcoming?q=ZZ999')).status, 404);
+    fc = JSON.parse((await get(`/api/forecast?from=SFO&to=JFK&depart=${day}T08:30`)).body);
+    assert.ok(fc.radar && fc.radar.cells.length > 0, 'planned trips get the future rain grid too');
     console.log('All tests passed ✔');
   } catch (e) {
     console.error(e); process.exitCode = 1;

@@ -51,6 +51,7 @@ function fakeGfs(sp) {
     hourly.lifted_index = times.map(() => 3);
     hourly.weather_code = times.map(() => 1);
     hourly.wind_gusts_10m = times.map(() => (nyc ? 30 : 8));
+    hourly.precipitation = times.map(() => (lon > -100 && lon < -90 ? 3.2 : 0));
     return { latitude: lat, longitude: lon, hourly };
   });
   return out.length === 1 ? out[0] : out;
@@ -89,6 +90,12 @@ globalThis.fetch = async (url, opts = {}) => {
       { fa_flight_id: 'UAL123-now', ident_icao: 'UAL123', aircraft_type: 'B38M', actual_off: iso(Date.now() - 2 * 3600e3), actual_on: null, estimated_on: iso(Date.now() + 3 * 3600e3), progress_percent: 40, filed_altitude: 350,
         origin: { code: 'KSFO', code_iata: 'SFO', code_icao: 'KSFO', city: 'San Francisco', name: 'San Francisco Intl', timezone: 'America/Los_Angeles' },
         destination: { code: 'KJFK', code_iata: 'JFK', code_icao: 'KJFK', city: 'New York', name: 'John F Kennedy Intl', timezone: 'America/New_York' } }] });
+    if (/\/flights\/DAL173\?/.test(u)) return json({ flights: [
+      { fa_flight_id: 'DAL173-yday', ident_icao: 'DAL173', actual_off: iso(Date.now() - 26 * 3600e3), actual_on: iso(Date.now() - 24 * 3600e3), origin: { code_iata: 'SFO', code_icao: 'KSFO' }, destination: { code_iata: 'JFK', code_icao: 'KJFK' } },
+      { fa_flight_id: 'DAL173-next', ident_icao: 'DAL173', ident_iata: 'DL173', aircraft_type: 'A359', filed_altitude: 370, status: 'Scheduled',
+        scheduled_out: iso(Date.now() + 35 * 60000), scheduled_off: iso(Date.now() + 50 * 60000), estimated_off: iso(Date.now() + 50 * 60000), scheduled_on: iso(Date.now() + 6 * 3600e3), actual_off: null, actual_on: null,
+        origin: { code: 'KSFO', code_iata: 'SFO', code_icao: 'KSFO', city: 'San Francisco', timezone: 'America/Los_Angeles' },
+        destination: { code: 'KJFK', code_iata: 'JFK', code_icao: 'KJFK', city: 'New York', timezone: 'America/New_York' } }] });
     if (u.endsWith('/flights/UAL123-now/route')) return json({ route_distance: '2600 mi', fixes: [
       { name: 'KSFO', latitude: 37.619, longitude: -122.375 }, { name: 'WPT1', latitude: 39.5, longitude: -112 },
       { name: 'NOLL', latitude: null, longitude: null }, { name: 'WPT2', latitude: 40.1, longitude: -104.5 },

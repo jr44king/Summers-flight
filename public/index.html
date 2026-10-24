@@ -91,7 +91,7 @@
       <span class="cap">Landing at</span>
       <input id="liveTo" autocapitalize="characters" autocorrect="off" spellcheck="false" maxlength="4" placeholder="JFK (optional)">
     </label>
-    <p class="hint">For a flight that’s in the air right now. Use the airline code on flight trackers, like UAL123 or DAL45.</p>
+    <p class="hint">Works for flights in the air, or up to 2 days before takeoff. Use the flight number, like DL173 or UA123.</p>
     <button class="primary" id="liveBtn" type="submit">Track flight</button>
   </form>
 
@@ -142,6 +142,10 @@
         <span class="sw-label">Weather radar<small id="radarNote">Rain &amp; storms, last 2 hours</small></span>
         <input type="checkbox" class="switch" id="showRadar">
       </label>
+      <div class="row timerow hidden" id="radarTimeRow">
+        <input type="range" id="radarTime" min="0" max="300" step="5" value="0" aria-label="Time during the flight">
+        <span id="radarTimeLabel">Takeoff</span>
+      </div>
       <label class="row switchrow">
         <span>Show pilot reports &amp; warnings</span>
         <input type="checkbox" class="switch" id="showReports">
@@ -153,11 +157,7 @@
       <p id="confText"></p>
     </div>
   </section>
-
-  <footer>
-    For curiosity and peace of mind, not for flight operations. Turbulence can happen without warning, so keep your seatbelt on when seated.
-    <br>Forecast: NOAA GFS via Open-Meteo · Radar: RainViewer · Pilot reports &amp; warnings: NOAA Aviation Weather Center · Live flights: adsb.lol, airplanes.live &amp; adsb.fi.
-  </footer>
+  <footer class="signature">Justin Roberts’ Turbulence Guide</footer>
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
