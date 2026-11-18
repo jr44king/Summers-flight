@@ -449,12 +449,14 @@
   async function loadHrrr() {
     if (hrrr.run && Date.now() - hrrr.at < 15 * 60000) return hrrr;
     try {
-      const j = await fetch('https://mesonet.agron.iastate.edu/data/gis/images/4326/hrrr/refd_1080.json').then((r) => r.json());
+      const get = () => fetch('https://mesonet.agron.iastate.edu/data/gis/images/4326/hrrr/refd_1080.json').then((r) => r.json());
+      // One quick retry: a dropped connection shouldn't cost the detailed radar.
+      const j = await get().catch(() => new Promise((ok) => setTimeout(ok, 1500)).then(get));
       const d = new Date(j.model_init_utc);
       const p2 = (n) => String(n).padStart(2, '0');
       hrrr.run = `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}`;
       hrrr.initMs = d.getTime(); hrrr.at = Date.now();
-    } catch { hrrr.run = null; hrrr.at = Date.now(); }
+    } catch { hrrr.run = null; hrrr.at = Date.now() - 14 * 60000; } // try again in a minute
     return hrrr;
   }
   const inUS = (lat, lon) => lat > 21 && lat < 53 && lon > -134 && lon < -60;
@@ -485,6 +487,7 @@
       const tzh = o.origin && o.origin.tz;
       $('radarNote').textContent = !usRoute ? 'Rough forecast of rain & storms during your flight'
         : hrrr.run && when > lastHrrr && o.departUtc < lastHrrr ? `Rough forecast — the detailed radar forecast only reaches ${fmtTime(lastHrrr, tzh)} so far`
+        : !hrrr.run ? 'Rough forecast of rain & storms during your flight'
         : 'Rough forecast — detailed radar forecast appears about 15 hours before takeoff';
     }
     let k = 0;
@@ -532,6 +535,7 @@
       }
       drawForecastRain();
       if (!o.radar && !hrrr.layer) $('radarNote').textContent = 'Rain forecast is busy right now — switch it off and on again in a minute';
+      if (!hrrr.run && o.line.every((q) => inUS(q[0], q[1]))) radarTimer = setTimeout(showRadar, 60000); // detailed radar didn't load: retry
       return;
     }
     $('radarTimeRow').classList.add('hidden'); fcLayer.clearLayers(); ghostLayer.clearLayers(); clearHrrr();
