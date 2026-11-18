@@ -136,10 +136,36 @@ async function loadTurbulence() {
     isigmet: raw.isigmet.ok ? raw.isigmet.data : null,
     gairmet: [].concat(raw.gairmetHi.ok ? raw.gairmetHi.data || [] : [], raw.gairmetLo.ok ? raw.gairmetLo.data || [] : []),
   });
+  out.official = await getOfficialForecast().catch(() => null);
   out.updated = Date.now();
   out.refreshSec = TURB_REFRESH / 1000;
   out.warnings = failed;
   return out;
+}
+
+// The Weather Service's official turbulence forecast (G-AIRMETs) for now, +3, +6, +9 and +12 hours.
+// It's updated every few hours, so we refresh it every 30 minutes.
+const official = { data: null, at: 0 };
+async function getOfficialForecast() {
+  if (official.data && Date.now() - official.at < 30 * 60000) return official.data;
+  const jobs = [];
+  for (const hz of ['turb-hi', 'turb-lo']) for (const f of [0, 3, 6, 9, 12]) {
+    jobs.push(fetchJSON(`${AWC}/gairmet?format=json&hazard=${hz}&fore=${f}`).then((r) => ({ ok: true, hz, list: Array.isArray(r.data) ? r.data : [] }), () => ({ ok: false, hz })));
+  }
+  const res = await Promise.all(jobs);
+  const hi = res.filter((r) => r.hz === 'turb-hi');
+  const all = res.flatMap((r) => (r.ok ? r.list : []));
+  // When the forecast was issued: any snapshot's valid time minus its forecast hour.
+  const one = all.find((g) => g.validTime && g.forecastHour != null);
+  if (!hi.every((r) => r.ok) || !one) {
+    if (official.data) return official.data; // keep the last good one
+    throw new Error('Official turbulence forecast unavailable');
+  }
+  const issued = Date.parse(one.validTime) - Number(one.forecastHour) * 3600000;
+  const areas = normalizeTurbulence({ gairmet: all }).areas;
+  official.data = { from: issued - 90 * 60000, to: issued + 12 * 3600000 + 90 * 60000, areas };
+  official.at = Date.now();
+  return official.data;
 }
 
 async function getTurbulence() {
@@ -665,7 +691,8 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/api/turbulence') {
       const data = await getTurbulence();
-      return send(res, 200, { ...data, error: turb.error });
+      const { official: _skip, ...rest } = data; // the full 12-hour official forecast is only used for scoring
+      return send(res, 200, { ...rest, error: turb.error });
     }
     if (p === '/api/flight') {
       const q = (url.searchParams.get('q') || '').toUpperCase().replace(/[^A-Z0-9]/g, '');

@@ -71,7 +71,14 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.includes('/pirep')) return json(PIREPS);
   if (u.includes('/airsigmet')) return json(AIRSIGMET);
   if (u.includes('/isigmet')) return json(ISIGMET);
-  if (u.includes('/gairmet')) return json(u.includes('turb-hi') ? [GAIRMET[0]] : [GAIRMET[1]]);
+  if (u.includes('/gairmet')) {
+    const m = /fore=(\d+)/.exec(u);
+    const base = u.includes('turb-hi') ? GAIRMET[0] : GAIRMET[1];
+    if (!m) return json([base]);
+    // Forecast snapshots: the same box, issued now, valid every 3 hours out to 12.
+    const f = Number(m[1]);
+    return json([{ ...base, forecastHour: f, validTime: iso(now + f * 3600e3) }]);
+  }
   if (u.includes('/airport')) {
     if (u.includes('KJFK')) return json([{ icaoId: 'KJFK', iataId: 'JFK', name: 'NEW YORK/JOHN F KENNEDY INTL ', lat: 40.6399, lon: -73.7787, elev: 4 }]);
     if (u.includes('KSFO')) return json([{ icaoId: 'KSFO', iataId: 'SFO', name: 'SAN FRANCISCO/SAN FRANCISCO INTL', lat: 37.619, lon: -122.375, elev: 4 }]);

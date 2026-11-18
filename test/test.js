@@ -99,6 +99,29 @@ assert.ok(!desc.points.some((p, i) => i > 0 && p.altFt > desc.points[i - 1].altF
   assert.strictEqual((await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: spiky(1) })).segments.length, 0, 'lone spike ignored');
   assert.strictEqual((await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: spiky(3) })).segments.length, 1, 'real patch kept');
   await assert.rejects(forecastTrip({ origin: SFO, dest: JFK, departUtc: now, getWeather: async () => { throw new Error('down'); }, now }), /weather forecast/);
+  { // official forecast: model bumps outside its areas are toned down; inside, model + forecast agree on moderate
+    const jetty = () => ({ levels: [{ p: 300, spd: 40, dir: 270, zFt: 30000 }, { p: 250, spd: 110, dir: 270, zFt: 34000 }, { p: 200, spd: 60, dir: 270, zFt: 38500 }], cape: 0, li: 5, code: 0, gustKt: 5, groundFt: 0 });
+    const box = { kind: 'G-AIRMET', severity: 2, baseFt: 30000, topFt: 42000, from: now - 3600e3, to: now + 13 * 3600e3, poly: [[38, -102], [42, -102], [42, -96], [38, -96]] };
+    const official = { from: now - 3600e3, to: now + 13 * 3600e3, areas: [box] };
+    const r = await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 3600e3, now, turb: { pireps: [], areas: [], official }, getWeather: async (pts) => pts.map(() => jetty) });
+    const cruise = r.points.filter((p) => p.altFt >= 34000);
+    const inside = cruise.filter((p) => p.lat > 38 && p.lat < 42 && p.lon > -102 && p.lon < -96);
+    const outside = cruise.filter((p) => !(p.lat > 37 && p.lat < 43 && p.lon > -103 && p.lon < -95));
+    assert.ok(inside.length && inside.every((p) => p.score >= 2 && p.score < 2.25), 'inside official area: moderate');
+    assert.ok(outside.length && outside.every((p) => p.score <= 1.4), 'outside official area: light at most');
+    // smooth pilot reports nearby pull a bumpy model forecast down
+    const spot = inside[Math.floor(inside.length / 2)];
+    const smooth = Array.from({ length: 4 }, (_, k) => ({ lat: spot.lat + k * 0.1, lon: spot.lon, altFt: spot.altFt, intensity: 0, time: now - 10 * 60000 }));
+    const r2 = await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 3600e3, now, turb: { pireps: smooth, areas: [], official }, getWeather: async (pts) => pts.map(() => jetty) });
+    const near = r2.points.filter((p) => p.t === spot.t);
+    assert.ok(near.length && near.every((p) => p.score < 1.5), 'smooth reports tone it down: ' + near.map((p) => p.score));
+  }
+  { // a huge jet-stream wind change in the model alone is shown as Moderate at most, never Strong or Severe
+    const wild = () => ({ levels: [{ p: 400, spd: 40, dir: 270, zFt: 24000 }, { p: 300, spd: 60, dir: 270, zFt: 30000 }, { p: 250, spd: 170, dir: 270, zFt: 34000 }, { p: 200, spd: 60, dir: 270, zFt: 38500 }], cape: 0, li: 5, code: 0, gustKt: 10, groundFt: 0 });
+    const r = await forecastTrip({ origin: SFO, dest: JFK, departUtc: now + 86400000, now, getWeather: async (pts) => pts.map(() => wild) });
+    assert.ok(r.segments.length && r.segments.every((g) => !['strong', 'severe'].includes(g.key)), 'forecast alone capped at moderate: ' + r.segments.map((g) => g.key));
+    assert.ok(r.segments.some((g) => g.key === 'moderate'), 'still shows moderate');
+  }
 })().catch((e) => { console.error(e); process.exit(1); });
 
 // ----- server end-to-end with faked upstreams -----
