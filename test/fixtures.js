@@ -29,6 +29,7 @@ const OTHER = ['abcdef', 'DAL45   ', 'United States', 1, 1, -80, 30, 9000, false
 // Fake Open-Meteo GFS answer: a strong jet stream (high wind shear near 34,000 ft)
 // between 105°W and 95°W, and gusty winds near New York.
 const gfsCalls = [];
+const meteo = { busy: 0 }; // > 0: answer 429 that many times
 function fakeGfs(sp) {
   gfsCalls.push(sp.toString());
   const lats = sp.get('latitude').split(',').map(Number);
@@ -80,6 +81,7 @@ globalThis.fetch = async (url, opts = {}) => {
     const lon = Number(new URL(u).searchParams.get('longitude'));
     return json({ timezone: lon < -100 ? 'America/Los_Angeles' : 'America/New_York', utc_offset_seconds: 0, hourly: { time: [] } });
   }
+  if (u.includes('api.open-meteo.com') && meteo.busy > 0) { meteo.busy--; gfsCalls.push('429'); return { ok: false, status: 429, headers: new Map(), text: async () => '{"error":true}' }; }
   if (u.includes('api.open-meteo.com/v1/gfs')) return json(fakeGfs(new URL(u).searchParams));
   if (u.includes('aeroapi.flightaware.com')) {
     faCalls.push(u);
@@ -124,4 +126,4 @@ globalThis.fetch = async (url, opts = {}) => {
 }
 
 
-module.exports = { faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, STATE, openskyCalls, gfsCalls, installMockFetch };
+module.exports = { meteo, faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, STATE, openskyCalls, gfsCalls, installMockFetch };

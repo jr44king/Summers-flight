@@ -2,7 +2,8 @@
 'use strict';
 const assert = require('assert');
 process.env.FLIGHTAWARE_API_KEY = 'test-key';
-const { faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, openskyCalls, gfsCalls, installMockFetch } = require('./fixtures');
+process.env.METEO_FAST_RETRY = '1';
+const { meteo, faCalls, adsb, adsbCalls, now, PIREPS, AIRSIGMET, ISIGMET, GAIRMET, openskyCalls, gfsCalls, installMockFetch } = require('./fixtures');
 installMockFetch();
 
 const { normalizeTurbulence, parseIntensity } = require('../lib/normalize');
@@ -221,13 +222,29 @@ server.listen(0, async () => {
     assert.ok(Math.abs(up.departUtc - (Date.now() + 50 * 60000)) < 120000, 'forecast starts at the scheduled takeoff');
     assert.strictEqual(up.cruiseFt, 37000, 'filed cruise altitude used');
     assert.strictEqual(up.upcoming.filedRoute, false); assert.strictEqual(up.origin.iata, 'SFO'); assert.strictEqual(up.dest.iata, 'JFK');
-    assert.ok(up.radar && up.radar.cells.length % 5 === 0 && up.radar.cells.length <= 150, 'future rain grid');
-    assert.ok(up.radar.times.length >= 6 && up.radar.rain.some((row) => row.some((v) => v > 0)), 'some forecast rain');
+    assert.ok(!up.radar, 'radar grid is no longer sent with every forecast');
+    const radarQ = (o) => `/api/radar?path=${o.line.filter((_, i) => i % 6 === 0).concat([o.line[o.line.length - 1]]).map((q) => q[0].toFixed(2) + ',' + q[1].toFixed(2)).join(';')}&from=${o.departUtc}&to=${o.arriveUtc}`;
+    r = await get(radarQ(up));
+    assert.strictEqual(r.status, 200, r.body);
+    const rd = JSON.parse(r.body);
+    assert.ok(rd.cells.length % 5 === 0 && rd.cells.length <= 100, 'future rain grid');
+    assert.ok(rd.times.length >= 6 && rd.rain.some((row) => row.some((v) => v > 0)), 'some forecast rain');
+    assert.strictEqual((await get('/api/radar?path=1,2&from=0&to=1')).status, 400);
     up = JSON.parse((await get('/api/upcoming?q=UA123')).body);
     assert.ok(up.airborne, 'already flying → tell the page to track it live');
     assert.strictEqual((await get('/api/upcoming?q=ZZ999')).status, 404);
-    fc = JSON.parse((await get(`/api/forecast?from=SFO&to=JFK&depart=${day}T08:30`)).body);
-    assert.ok(fc.radar && fc.radar.cells.length > 0, 'planned trips get the future rain grid too');
+    // ----- weather service busy (429) -----
+    meteo.busy = 1; // busy once → waits and tries again, and the forecast still works
+    r = await get(`/api/forecast?from=LAX&to=ORD&depart=${day}T09:00`);
+    assert.strictEqual(r.status, 200, 'retried after busy: ' + r.body);
+    meteo.busy = 99; // busy for a long time, new route → friendly message, not a crash
+    r = await get(`/api/forecast?from=SEA&to=MIA&depart=${day}T10:00`);
+    assert.strictEqual(r.status, 503, r.body);
+    assert.match(JSON.parse(r.body).error, /busy right now/);
+    // …but a route we've seen recently still answers from the weather we already have
+    r = await get(`/api/forecast?from=SFO&to=JFK&depart=${day}T08:30`);
+    assert.strictEqual(r.status, 200, 'served from cache while busy: ' + r.body);
+    meteo.busy = 0;
     console.log('All tests passed ✔');
   } catch (e) {
     console.error(e); process.exitCode = 1;

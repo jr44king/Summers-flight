@@ -441,7 +441,7 @@
   map.createPane('rainFc'); map.getPane('rainFc').style.zIndex = 390; // under the route lines
   const fcLayer = L.layerGroup().addTo(map);
   const ghostLayer = L.layerGroup().addTo(map);
-  const forecastMode = () => Boolean(state.result && !state.result.live && state.result.radar && state.result.radar.cells && state.result.radar.cells.length);
+  const forecastMode = () => Boolean(state.result && !state.result.live && state.result.line && state.result.line.length > 1);
   const rainColor = (mm, storm) => (storm ? '#b44fd6' : mm >= 10 ? '#ef4444' : mm >= 5 ? '#f59e0b' : mm >= 2 ? '#eccc2a' : mm >= 0.5 ? '#4cc46a' : '#a7e3a1');
 
   // NOAA HRRR simulated radar (via Iowa Environmental Mesonet): radar-quality detail, US only, ~18 h ahead.
@@ -488,8 +488,8 @@
         : 'Rough forecast — detailed radar forecast appears about 15 hours before takeoff';
     }
     let k = 0;
-    for (let i = 1; i < rd.times.length; i++) if (Math.abs(rd.times[i] - when) < Math.abs(rd.times[k] - when)) k = i;
-    if (!hrrr.layer) rd.cells.forEach((c, i) => {
+    if (rd && rd.times) for (let i = 1; i < rd.times.length; i++) if (Math.abs(rd.times[i] - when) < Math.abs(rd.times[k] - when)) k = i;
+    if (!hrrr.layer && rd && rd.cells) rd.cells.forEach((c, i) => {
       const mm = (rd.rain[i] || [])[k] || 0, storm = (rd.storm[i] || [])[k];
       if (mm < 0.1 && !storm) return;
       L.circle(c, { pane: 'rainFc', radius: rd.radiusKm * 1000, stroke: false, fillColor: rainColor(mm, storm), fillOpacity: storm ? 0.42 : 0.32, interactive: false }).addTo(fcLayer);
@@ -518,7 +518,20 @@
       $('radarTimeRow').classList.remove('hidden');
       await loadHrrr();
       if (!forecastMode() || !$('showRadar').checked) return;
+      // The detailed US radar forecast covers it? Then the rougher rain grid isn't needed.
+      const line = o.line, usRoute = line.every((q) => inUS(q[0], q[1]));
+      const hrrrCovers = usRoute && hrrr.run && o.departUtc >= hrrr.initMs && o.arriveUtc <= hrrr.initMs + 1080 * 60000;
+      if (!o.radar && !hrrrCovers) {
+        const step = Math.max(1, Math.ceil(line.length / 60));
+        const pts = line.filter((_, i) => i % step === 0).concat([line[line.length - 1]]).map((q) => `${q[0].toFixed(2)},${q[1].toFixed(2)}`).join(';');
+        try {
+          const rd = await getJSON(`/api/radar?path=${pts}&from=${o.departUtc}&to=${o.arriveUtc}`);
+          if (state.result === o) o.radar = rd;
+        } catch { /* only the detailed radar (if any) will show */ }
+        if (state.result !== o || !$('showRadar').checked) return;
+      }
       drawForecastRain();
+      if (!o.radar && !hrrr.layer) $('radarNote').textContent = 'Rain forecast is busy right now — switch it off and on again in a minute';
       return;
     }
     $('radarTimeRow').classList.add('hidden'); fcLayer.clearLayers(); ghostLayer.clearLayers(); clearHrrr();
@@ -569,6 +582,16 @@
     store.set('live', { flight: q, to });
     state.live = { q, to };
     busy($('liveBtn'), true, 'Finding the flight…');
+    const u = new URL(location.href); u.search = `?flight=${q}${to ? '&to=' + to : ''}`; history.replaceState(null, '', u);
+    try {
+      await startFlight(state.live);
+    } finally {
+      busy($('liveBtn'), false);
+    }
+  });
+  const isBusy = (err) => err && (err.status === 503 || err.status === 502 || err.status === 429);
+  async function startFlight(L0) {
+    if (state.live !== L0) return;
     try {
       try {
         await pollFlight(true);
@@ -576,17 +599,22 @@
         if (err.status !== 404) throw err;
         // Not in the air yet: show the forecast for its scheduled takeoff instead.
         clearTimeout(state.liveTimer);
-        await showUpcoming(state.live);
+        await showUpcoming(L0);
       }
-      const u = new URL(location.href); u.search = `?flight=${q}${to ? '&to=' + to : ''}`; history.replaceState(null, '', u);
     } catch (err) {
+      if (state.live !== L0) return;
+      if (isBusy(err)) {
+        // The weather service is busy: keep trying by itself instead of giving up.
+        showError('The weather forecast is busy right now. Trying again in a minute…');
+        clearTimeout(state.liveTimer);
+        state.liveTimer = setTimeout(() => startFlight(L0), 60000);
+        return;
+      }
       showError(err.message);
       state.live = null;
       $('results').classList.add('hidden');
-    } finally {
-      busy($('liveBtn'), false);
     }
-  });
+  }
   $('stopBtn').onclick = () => { stopLive(false); $('results').classList.add('hidden'); };
 
   // A flight that hasn't taken off yet (needs FlightAware on the server).
@@ -701,7 +729,7 @@
       placePlane();
       if (f.onGround && !f.landed && first && !L0.noUpcoming) {
         // At the gate or taxiing: show the forecast for its takeoff, then switch to live when it's airborne.
-        try { clearTimeout(state.liveTimer); await showUpcoming(L0); return; } catch { /* fall through to the ground message */ }
+        try { clearTimeout(state.liveTimer); await showUpcoming(L0); return; } catch (e) { if (isBusy(e)) throw e; /* otherwise fall through to the ground message */ }
       }
       if (f.onGround) {
         // Nothing left to forecast while the plane is on the ground.
@@ -711,13 +739,31 @@
         state.liveTimer = setTimeout(() => pollFlight(false), Math.max(wait, 60) * 1000);
         return;
       }
-      document.querySelectorAll('#results > .hidden:not(#liveBar)').forEach((el) => el.classList.remove('hidden'));
+      if (!L0.needFit) document.querySelectorAll('#results > .hidden:not(#liveBar)').forEach((el) => el.classList.remove('hidden'));
       // Refresh the ride forecast every 5 minutes (weather doesn't change faster than that).
       if (first || Date.now() - state.fcAt > 5 * 60000 || dest !== state.fcDest) {
         state.fcAt = Date.now(); state.fcDest = dest;
-        const o = await getJSON(`/api/forecast?lat=${f.lat}&lon=${f.lon}&alt=${f.altFt || 0}&gs=${f.gsKt || 0}&track=${f.track || 0}&vs=${f.vsFpm || 0}${dest ? '&to=' + dest : ''}&q=${encodeURIComponent(f.callsign || L0.q)}`);
+        let o;
+        try {
+          o = await getJSON(`/api/forecast?lat=${f.lat}&lon=${f.lon}&alt=${f.altFt || 0}&gs=${f.gsKt || 0}&track=${f.track || 0}&vs=${f.vsFpm || 0}${dest ? '&to=' + dest : ''}&q=${encodeURIComponent(f.callsign || L0.q)}`);
+        } catch (err) {
+          if (state.live !== L0) return;
+          // Keep tracking the plane and try the forecast again in about a minute.
+          state.fcAt = Date.now() - 4 * 60000;
+          if (first || L0.needFit) {
+            L0.needFit = true;
+            $('results').classList.remove('hidden');
+            document.querySelectorAll('#results > :not(#liveBar)').forEach((el) => el.classList.add('hidden'));
+          }
+          showError(isBusy(err) ? 'The weather forecast is busy right now. Trying again in a minute…' : 'Couldn’t load the ride forecast. Trying again in a minute…');
+          state.liveTimer = setTimeout(() => pollFlight(false), Math.max(wait, 60) * 1000);
+          return;
+        }
         if (state.live !== L0) return;
-        render(o, first);
+        if (L0.needFit) document.querySelectorAll('#results > .hidden:not(#liveBar)').forEach((el) => el.classList.remove('hidden'));
+        render(o, first || L0.needFit);
+        L0.needFit = false;
+        if (o.weatherMissing) state.fcAt = Date.now() - 4 * 60000; // only pilot reports this time: get the weather again soon
         if (L0.to && o.dest) { $('lbTo').textContent = code(o.dest); $('lbToName').textContent = cityName(o.dest); $('lbRoute').classList.remove('hidden'); }
       } else {
         drawRoute(false); // keep the line attached to the moving plane

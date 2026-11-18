@@ -472,7 +472,7 @@ async function getAirportWithZone(id) {
   const a = await getAirport(id);
   if (!a.tz) {
     try {
-      const tz = await timeZoneFor(a.lat, a.lon, fetchJSON);
+      const tz = await timeZoneFor(a.lat, a.lon, meteoFetch);
       a.tz = validZone(tz) ? tz : 'UTC';
     } catch {
       return { ...a, tz: 'UTC', tzGuess: true }; // try again next time
@@ -482,32 +482,85 @@ async function getAirportWithZone(id) {
 }
 
 // ---------- trip forecasts ----------
-const weatherCache = new Map(); // key → { at, samplers }
+// Weather is cached per map square (about 15 miles across), so a live flight that moves a little
+// between updates, or two people checking the same route, reuse what we already have.
+const CELL = 0.25;
+const snap = (v) => Math.round(v / CELL) * CELL;
+const cellKey = (p) => `${snap(p.lat).toFixed(2)},${snap(p.lon).toFixed(2)}`;
+const weatherCells = new Map(); // "lat,lon" → [{ at, from, to, sampler }] (a few time windows each)
+const WEATHER_FRESH = 60 * 60000, WEATHER_STALE_OK = 12 * 3600000;
 async function cachedWeather(points, fromMs, toMs) {
-  const key = points.map((p) => `${p.lat.toFixed(1)},${p.lon.toFixed(1)}`).join(';') + '|' + Math.floor(fromMs / 3600000) + '|' + Math.floor(toMs / 3600000);
-  const hit = weatherCache.get(key);
-  if (hit && Date.now() - hit.at < 30 * 60000) return hit.samplers;
-  const samplers = await routeWeather(points, fromMs, toMs, fetchJSON);
-  weatherCache.set(key, { at: Date.now(), samplers });
-  if (weatherCache.size > 200) weatherCache.delete(weatherCache.keys().next().value);
-  return samplers;
+  const keys = points.map(cellKey);
+  const covers = (c) => c.from <= fromMs - 30 * 60000 && c.to >= toMs + 60 * 60000;
+  const best = (k, maxAge) => {
+    const now = Date.now();
+    return (weatherCells.get(k) || []).filter((c) => covers(c) && now - c.at < maxAge).sort((a, b) => b.at - a.at)[0] || null;
+  };
+  const need = [...new Set(keys.filter((k) => !best(k, WEATHER_FRESH)))];
+  let error = null;
+  if (need.length) {
+    const pts = need.map((k) => { const [lat, lon] = k.split(',').map(Number); return { lat, lon }; });
+    try {
+      const samplers = await routeWeather(pts, fromMs, toMs, meteoFetch);
+      const at = Date.now();
+      need.forEach((k, i) => {
+        const list = (weatherCells.get(k) || []).filter((c) => at - c.at < WEATHER_STALE_OK).slice(-3);
+        list.push({ at, from: fromMs - 3600000, to: toMs + 2 * 3600000, sampler: samplers[i] });
+        weatherCells.delete(k);
+        weatherCells.set(k, list);
+      });
+      while (weatherCells.size > 3000) weatherCells.delete(weatherCells.keys().next().value);
+    } catch (e) {
+      error = e; // fall back to older weather we already have, if any
+    }
+  }
+  const out = keys.map((k) => { const c = best(k, WEATHER_STALE_OK); return c ? c.sampler : null; });
+  if (error && !out.some(Boolean)) throw error;
+  return out.map((f) => f || (() => null));
 }
 
-const radarCache = new Map();
-async function withRadar(out) {
-  if (!out || !out.line || out.live) return out;
-  const key = `${out.line[0][0]},${out.line[0][1]}>${out.line[out.line.length - 1][0]},${out.line[out.line.length - 1][1]}@${Math.floor(out.departUtc / 3600000)}`;
-  const hit = radarCache.get(key);
-  if (hit && Date.now() - hit.at < 30 * 60000) return { ...out, radar: hit.radar };
-  try {
-    const radar = await forecastRadar(out.line, out.departUtc, out.arriveUtc, fetchJSON);
-    radarCache.set(key, { at: Date.now(), radar });
-    if (radarCache.size > 100) radarCache.delete(radarCache.keys().next().value);
-    return { ...out, radar };
-  } catch {
-    return out; // the map just falls back to live radar
-  }
+// Open-Meteo (the free weather forecast) allows a limited number of lookups per minute and per day.
+// Ask one at a time, and when it says "busy" (429), wait and try again instead of failing.
+let meteoChain = Promise.resolve(), meteoBusyUntil = 0;
+const METEO_RETRY_MS = process.env.METEO_FAST_RETRY ? [20, 40] : [3000, 8000];
+function meteoFetch(url, opts = {}) {
+  const optional = opts.optional;
+  const run = async () => {
+    for (let i = 0; ; i++) {
+      if (optional && Date.now() < meteoBusyUntil) throw Object.assign(new Error('api.open-meteo.com is busy'), { status: 429 });
+      try {
+        return await fetchJSON(url, opts);
+      } catch (e) {
+        if (e.status !== 429) throw e;
+        meteoBusyUntil = Date.now() + 60000;
+        if (optional || i >= METEO_RETRY_MS.length) throw e;
+        await new Promise((r) => setTimeout(r, METEO_RETRY_MS[i]));
+      }
+    }
+  };
+  const p = meteoChain.then(run, run);
+  meteoChain = p.catch(() => {}).then(() => new Promise((r) => setTimeout(r, 150)));
+  return p;
 }
+
+// "Future radar" for planned flights: only fetched when someone turns the radar switch on.
+const radarCache = new Map();
+async function radarForecast(params) {
+  const path = (params.get('path') || '').split(';').map((s) => s.split(',').map(Number))
+    .filter((p) => p.length === 2 && p.every(Number.isFinite) && Math.abs(p[0]) <= 90 && Math.abs(p[1]) <= 180).slice(0, 200);
+  const from = Number(params.get('from')), to = Number(params.get('to'));
+  if (path.length < 2 || !Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 24 * 3600000) {
+    throw Object.assign(new Error('Bad radar request'), { status: 400 });
+  }
+  const key = `${path[0]}>${path[path.length - 1]}@${Math.floor(from / 3600000)}-${Math.floor(to / 3600000)}`;
+  const hit = radarCache.get(key);
+  if (hit && Date.now() - hit.at < 60 * 60000) return hit.radar;
+  const radar = await forecastRadar(path, from, to, (u, o) => meteoFetch(u, { ...o, optional: true }));
+  radarCache.set(key, { at: Date.now(), radar });
+  if (radarCache.size > 100) radarCache.delete(radarCache.keys().next().value);
+  return radar;
+}
+const withRadar = (out) => out; // radar now loads separately, on demand
 
 const MAX_AHEAD_DAYS = 15;
 async function tripForecast(params) {
@@ -656,6 +709,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/forecast') {
       return send(res, 200, await tripForecast(url.searchParams));
     }
+    if (p === '/api/radar') {
+      return send(res, 200, await radarForecast(url.searchParams));
+    }
     if (p === '/api/diagnostics') {
       // No secrets here: shows whether FlightAware is on, recent call results, and the shape of its answers.
       return send(res, 200, { flightaware: { enabled: fa.enabled, calls: fa.status.calls, lastError: fa.status.lastError, recent: fa.status.log, answerShapes: fa.status.samples } });
@@ -666,7 +722,7 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/')) return send(res, 404, { error: 'Unknown endpoint' });
     return serveStatic(req, res, p);
   } catch (e) {
-    const status = e.status === 404 || e.status === 400 || e.status === 429 ? e.status : 502;
+    const status = [400, 404, 429, 503].includes(e.status) ? e.status : 502;
     return send(res, status, { error: e.message || 'Something went wrong' });
   }
 });
